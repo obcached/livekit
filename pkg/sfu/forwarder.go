@@ -394,7 +394,8 @@ func (f *Forwarder) DetermineCodec(codec webrtc.RTPCodecCapability, extensions [
 		return false
 	}
 
-	// only VP8 uses a temporal layer selector (set below), do not carry one over on codec change
+	// only VP8 and VP9 simulcast use a temporal layer selector (set below),
+	// do not carry one over on codec change
 	if f.vls != nil {
 		f.vls.SetTemporalLayerSelector(nil)
 	}
@@ -428,11 +429,17 @@ func (f *Forwarder) DetermineCodec(codec webrtc.RTPCodecCapability, extensions [
 	case mime.MimeTypeVP9:
 		f.codecMunger = codecmunger.NewNull(f.logger)
 		if sfuutils.IsSimulcastMode(videoLayerMode) {
+			f.codecMunger = codecmunger.NewTemporalFilter(f.logger)
 			if f.vls != nil {
-				f.vls = videolayerselector.NewSimulcastFromOther(f.vls)
+				if vls := videolayerselector.NewSimulcastFromOther(f.vls); vls != nil {
+					f.vls = vls
+				} else {
+					f.logger.Errorw("failed to create simulcast on codec change", nil)
+				}
 			} else {
 				f.vls = videolayerselector.NewSimulcast(f.logger)
 			}
+			f.vls.SetTemporalLayerSelector(temporallayerselector.NewVP9(f.logger))
 		} else {
 			f.isDDAvailable = ddAvailable(extensions)
 			if f.isDDAvailable {
@@ -454,7 +461,11 @@ func (f *Forwarder) DetermineCodec(codec webrtc.RTPCodecCapability, extensions [
 		f.codecMunger = codecmunger.NewNull(f.logger)
 		if sfuutils.IsSimulcastMode(videoLayerMode) {
 			if f.vls != nil {
-				f.vls = videolayerselector.NewSimulcastFromOther(f.vls)
+				if vls := videolayerselector.NewSimulcastFromOther(f.vls); vls != nil {
+					f.vls = vls
+				} else {
+					f.logger.Errorw("failed to create simulcast on codec change", nil)
+				}
 			} else {
 				f.vls = videolayerselector.NewSimulcast(f.logger)
 			}
@@ -2251,8 +2262,8 @@ func (f *Forwarder) translateCodecHeader(extPkt *buffer.ExtPacket, tp *Translati
 	)
 	if err != nil {
 		tp.shouldDrop = true
-		if err == codecmunger.ErrFilteredVP8TemporalLayer || err == codecmunger.ErrOutOfOrderVP8PictureIdCacheMiss {
-			if err == codecmunger.ErrFilteredVP8TemporalLayer {
+		if err == codecmunger.ErrFilteredVP8TemporalLayer || err == codecmunger.ErrFilteredTemporalLayer || err == codecmunger.ErrOutOfOrderVP8PictureIdCacheMiss {
+			if err == codecmunger.ErrFilteredVP8TemporalLayer || err == codecmunger.ErrFilteredTemporalLayer {
 				// filtered temporal layer, update sequence number offset to prevent holes
 				f.rtpMunger.PacketDropped(extPkt)
 			}

@@ -15,8 +15,10 @@
 package sfu
 
 import (
+	"fmt"
 	"testing"
 
+	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/require"
@@ -2319,9 +2321,9 @@ func TestPacerScratchFitsInlineDependencyDescriptor(t *testing.T) {
 // key frame (which is always on temporal layer 0), the forwarder reaches its target layer so that
 // GetNextHigherTransition (and hence stream allocator probing) is not blocked forever.
 //
-// Codecs without a temporal layer selector in simulcast mode (VP9, AV1) forward every temporal
-// layer of the selected spatial layer, so the current temporal layer has to follow the target.
-// VP8 has a temporal layer selector and must keep stepping up through it.
+// Codecs without a temporal layer selector in simulcast mode (H.264, H.265, AV1) forward every
+// temporal layer of the selected spatial layer, so the current temporal layer has to follow the
+// target. VP8 and VP9 have a temporal layer selector which moves to the target on the key frame.
 func TestForwarderSimulcastTemporalLayerAfterSwitch(t *testing.T) {
 	bitrates := Bitrates{
 		{100, 150, 200, 0},
@@ -2353,6 +2355,12 @@ func TestForwarderSimulcastTemporalLayerAfterSwitch(t *testing.T) {
 			codec:           webrtc.RTPCodecCapability{MimeType: mime.MimeTypeVP9.String(), ClockRate: 90000},
 			target:          buffer.VideoLayer{Spatial: 1, Temporal: 0},
 			expectedCurrent: buffer.VideoLayer{Spatial: 1, Temporal: 0},
+		},
+		{
+			name:            "H.265 simulcast, three temporal layers",
+			codec:           webrtc.RTPCodecCapability{MimeType: mime.MimeTypeH265.String(), ClockRate: 90000},
+			target:          buffer.VideoLayer{Spatial: 1, Temporal: 2},
+			expectedCurrent: buffer.VideoLayer{Spatial: 1, Temporal: 2},
 		},
 		{
 			name:            "H.264 simulcast",
@@ -2441,6 +2449,9 @@ func TestForwarderSimulcastTemporalLayerAfterSwitch(t *testing.T) {
 				})
 			} else {
 				extPkt, err = testutils.GetTestExtPacket(params)
+				if tc.codec.MimeType == mime.MimeTypeVP9.String() {
+					extPkt.Payload = codecs.VP9Packet{B: true, E: true}
+				}
 			}
 			require.NoError(t, err)
 
@@ -2454,5 +2465,340 @@ func TestForwarderSimulcastTemporalLayerAfterSwitch(t *testing.T) {
 			_, available = f.GetNextHigherTransition(bitrates, false)
 			require.True(t, available)
 		})
+	}
+}
+
+// TestForwarderVP9SimulcastTemporalLayerFiltering checks that VP9 simulcast drops the temporal layers
+// above the target and keeps the outgoing sequence numbers contiguous.
+func TestForwarderVP9SimulcastTemporalLayerFiltering(t *testing.T) {
+	f := NewForwarder(
+		webrtc.RTPCodecTypeVideo,
+		logger.GetLogger(),
+		true,  // skipReferenceTS
+		true,  // disableOpportunisticAllocation
+		false, // enableStartAtDesiredQuality
+		nil,
+	)
+	f.DetermineCodec(
+		webrtc.RTPCodecCapability{MimeType: mime.MimeTypeVP9.String(), ClockRate: 90000},
+		nil,
+		livekit.VideoLayer_ONE_SPATIAL_LAYER_PER_STREAM,
+	)
+	f.SetMaxSpatialLayer(buffer.DefaultMaxLayerSpatial)
+	f.SetMaxTemporalLayer(buffer.DefaultMaxLayerTemporal)
+	f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: 0})
+
+	// L1T3 pattern: 0, 2, 1, 2, 0, one packet per frame
+	tids := []uint8{0, 2, 1, 2, 0, 2, 1}
+	var forwarded []uint64
+	for i, tid := range tids {
+		params := &testutils.TestExtPacketParams{
+			SequenceNumber: 23333 + uint16(i),
+			Timestamp:      0xabcdef + uint32(i)*3000,
+			SSRC:           0x12345678,
+			PayloadSize:    20,
+			Marker:         true,
+			IsKeyFrame:     i == 0,
+			VideoLayer:     buffer.VideoLayer{Spatial: 0, Temporal: int32(tid)},
+		}
+		extPkt, err := testutils.GetTestExtPacket(params)
+		require.NoError(t, err)
+		extPkt.Payload = codecs.VP9Packet{TID: tid, B: true, E: true, U: tid != 0}
+
+		tp, err := f.GetTranslationParams(extPkt, 0)
+		require.NoError(t, err)
+		require.Equal(t, tid != 0, tp.shouldDrop, "tid %d", tid)
+		if !tp.shouldDrop {
+			forwarded = append(forwarded, tp.rtp.extSequenceNumber)
+		}
+	}
+	require.Equal(t, buffer.VideoLayer{Spatial: 0, Temporal: 0}, f.vls.GetCurrent())
+	require.Len(t, forwarded, 2)
+	require.Equal(t, forwarded[0]+1, forwarded[1])
+
+	// raising the target forwards the higher layers from the next switching up points, one
+	// temporal layer at a time: continuing the GOF, 2 (dropped), 0, 2 (dropped), 1, 2
+	f.lastAllocation.IsDeficient = true
+	f.SetMaxPublishedLayer(buffer.DefaultMaxLayerSpatial)
+	f.SetMaxTemporalLayerSeen(buffer.DefaultMaxLayerTemporal)
+	bitrates := Bitrates{
+		{100, 150, 200, 0},
+		{300, 450, 600, 0},
+		{900, 1350, 1800, 0},
+	}
+	f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: 2})
+	for i, tid := range []uint8{2, 0, 2, 1, 2} {
+		// target pending: no higher transition (and hence no probing) until it is reached
+		_, available := f.GetNextHigherTransition(bitrates, false)
+		require.False(t, available)
+
+		params := &testutils.TestExtPacketParams{
+			SequenceNumber: 23333 + uint16(len(tids)+i),
+			Timestamp:      0xabcdef + uint32(len(tids)+i)*3000,
+			SSRC:           0x12345678,
+			PayloadSize:    20,
+			Marker:         true,
+			VideoLayer:     buffer.VideoLayer{Spatial: 0, Temporal: int32(tid)},
+		}
+		extPkt, err := testutils.GetTestExtPacket(params)
+		require.NoError(t, err)
+		extPkt.Payload = codecs.VP9Packet{TID: tid, B: true, E: true, U: tid != 0}
+
+		tp, err := f.GetTranslationParams(extPkt, 0)
+		require.NoError(t, err)
+		require.Equal(t, i == 0 || i == 2, tp.shouldDrop, "frame %d, tid %d", i, tid)
+		if !tp.shouldDrop {
+			require.Equal(t, forwarded[len(forwarded)-1]+1, tp.rtp.extSequenceNumber)
+			forwarded = append(forwarded, tp.rtp.extSequenceNumber)
+		}
+	}
+	require.Equal(t, buffer.VideoLayer{Spatial: 0, Temporal: 2}, f.vls.GetCurrent())
+
+	// target reached: the next higher transition is available again
+	_, available := f.GetNextHigherTransition(bitrates, false)
+	require.True(t, available)
+}
+
+func newVP9SimulcastForwarder(t *testing.T) *Forwarder {
+	t.Helper()
+
+	f := NewForwarder(
+		webrtc.RTPCodecTypeVideo,
+		logger.GetLogger(),
+		true,  // skipReferenceTS
+		true,  // disableOpportunisticAllocation
+		false, // enableStartAtDesiredQuality
+		nil,
+	)
+	f.DetermineCodec(
+		webrtc.RTPCodecCapability{MimeType: mime.MimeTypeVP9.String(), ClockRate: 90000},
+		nil,
+		livekit.VideoLayer_ONE_SPATIAL_LAYER_PER_STREAM,
+	)
+	f.SetMaxSpatialLayer(buffer.DefaultMaxLayerSpatial)
+	f.SetMaxTemporalLayer(buffer.DefaultMaxLayerTemporal)
+	return f
+}
+
+// vp9L1T3GOF is the group of frames of a libwebrtc VP9 L1T3 stream in non-flexible mode
+// (temporal layers 0, 2, 1, 2) with the picture id difference to the reference of each frame.
+// libwebrtc sets the switching up point flag (U) on every frame.
+var vp9L1T3GOF = []struct {
+	tid   uint8
+	pDiff uint16
+}{
+	{tid: 0, pDiff: 4},
+	{tid: 2, pDiff: 1},
+	{tid: 1, pDiff: 2},
+	{tid: 2, pDiff: 1},
+}
+
+// TestForwarderVP9SimulcastTemporalUpSwitchDecodable raises the target temporal layer at every
+// position of the GOF and checks that every forwarded frame references a forwarded frame, i.e.
+// that no up-switch forwards a frame whose reference has been dropped.
+func TestForwarderVP9SimulcastTemporalUpSwitchDecodable(t *testing.T) {
+	const firstPictureId = uint16(100)
+	const packetsPerFrame = 2
+
+	for _, tr := range []struct{ from, to int32 }{{0, 1}, {0, 2}, {1, 2}} {
+		for phase := range vp9L1T3GOF {
+			t.Run(fmt.Sprintf("%d to %d during GOF position %d", tr.from, tr.to, phase), func(t *testing.T) {
+				f := newVP9SimulcastForwarder(t)
+				f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: tr.from})
+
+				forwarded := make(map[uint16]bool)
+				raised := false
+				sn := uint16(23333)
+				for pid := firstPictureId; pid < firstPictureId+5*uint16(len(vp9L1T3GOF)); pid++ {
+					pos := int(pid-firstPictureId) % len(vp9L1T3GOF)
+					gof := vp9L1T3GOF[pos]
+					isKeyFrame := pid == firstPictureId
+
+					forwardedPackets := 0
+					for i := 0; i < packetsPerFrame; i++ {
+						params := &testutils.TestExtPacketParams{
+							SequenceNumber: sn,
+							Timestamp:      0xabcdef + uint32(pid)*3000,
+							SSRC:           0x12345678,
+							PayloadSize:    20,
+							Marker:         i == packetsPerFrame-1,
+							IsKeyFrame:     isKeyFrame,
+							VideoLayer:     buffer.VideoLayer{Spatial: 0, Temporal: int32(gof.tid)},
+						}
+						sn++
+						extPkt, err := testutils.GetTestExtPacket(params)
+						require.NoError(t, err)
+						extPkt.Payload = codecs.VP9Packet{
+							I:         true,
+							P:         !isKeyFrame,
+							B:         i == 0,
+							E:         i == packetsPerFrame-1,
+							U:         true,
+							PictureID: pid,
+							TID:       gof.tid,
+						}
+
+						tp, err := f.GetTranslationParams(extPkt, 0)
+						require.NoError(t, err)
+						if !tp.shouldDrop {
+							forwardedPackets++
+						}
+
+						// raise the target in the middle of the frame at this position of the second GOF
+						if !raised && pos == phase && pid >= firstPictureId+uint16(len(vp9L1T3GOF)) {
+							require.Equal(t, buffer.VideoLayer{Spatial: 0, Temporal: tr.from}, f.vls.GetCurrent())
+							f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: tr.to})
+							raised = true
+						}
+					}
+
+					require.Contains(t, []int{0, packetsPerFrame}, forwardedPackets, "picture %d partially forwarded", pid)
+					if forwardedPackets == 0 {
+						continue
+					}
+					forwarded[pid] = true
+					if !isKeyFrame {
+						require.True(
+							t,
+							forwarded[pid-gof.pDiff],
+							"picture %d (TL%d) forwarded, its reference %d was dropped",
+							pid, gof.tid, pid-gof.pDiff,
+						)
+					}
+				}
+				require.True(t, raised)
+				require.Equal(t, buffer.VideoLayer{Spatial: 0, Temporal: tr.to}, f.vls.GetCurrent())
+			})
+		}
+	}
+}
+
+// TestForwarderVP9SimulcastTemporalFilterLatePacket documents the handling of a late (e.g.
+// retransmitted) packet of a filtered temporal layer. The filter decides on the temporal layer
+// only, so the late packet is dropped like an in-order one. Its outgoing sequence number cannot
+// be reclaimed (packets after it have been forwarded already) and stays a hole, like a lost
+// packet. VP9 receivers tolerate it: libwebrtc assembles VP9 frames by picture id
+// (RtpVp9RefFinder), which is forwarded unchanged, and stops NACKing the hole after a few tries.
+func TestForwarderVP9SimulcastTemporalFilterLatePacket(t *testing.T) {
+	f := newVP9SimulcastForwarder(t)
+	f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: 0})
+
+	send := func(sn uint16, pid uint16, tid uint8, isKeyFrame bool) TranslationParams {
+		params := &testutils.TestExtPacketParams{
+			SequenceNumber: sn,
+			Timestamp:      0xabcdef + uint32(pid)*3000,
+			SSRC:           0x12345678,
+			PayloadSize:    20,
+			Marker:         true,
+			IsKeyFrame:     isKeyFrame,
+			VideoLayer:     buffer.VideoLayer{Spatial: 0, Temporal: int32(tid)},
+		}
+		extPkt, err := testutils.GetTestExtPacket(params)
+		require.NoError(t, err)
+		extPkt.Payload = codecs.VP9Packet{I: true, P: !isKeyFrame, B: true, E: true, U: true, PictureID: pid, TID: tid}
+
+		tp, err := f.GetTranslationParams(extPkt, 0)
+		require.NoError(t, err)
+		return tp
+	}
+
+	tp := send(23333, 100, 0, true)
+	require.False(t, tp.shouldDrop)
+	first := tp.rtp.extSequenceNumber
+
+	// 23334 (TL2) is lost, the next TL0 frame arrives with a gap
+	tp = send(23335, 102, 0, false)
+	require.False(t, tp.shouldDrop)
+	require.Equal(t, first+2, tp.rtp.extSequenceNumber)
+
+	// late TL2 packet (e.g. retransmission): dropped, its sequence number stays a hole
+	tp = send(23334, 101, 2, false)
+	require.True(t, tp.shouldDrop)
+
+	// later packets continue after the hole, without any payload munging (picture id unchanged)
+	tp = send(23336, 103, 0, false)
+	require.False(t, tp.shouldDrop)
+	require.Equal(t, first+3, tp.rtp.extSequenceNumber)
+	require.Zero(t, tp.incomingHeaderSize)
+	require.Zero(t, tp.codecBytesLen)
+}
+
+// TestForwarderVP9SimulcastToVP8 checks that a codec change from VP9 simulcast to VP8 uses the VP8
+// munger, seeded with the state received while on VP9 (migration), and the VP8 temporal layer selector.
+func TestForwarderVP9SimulcastToVP8(t *testing.T) {
+	f := newVP9SimulcastForwarder(t)
+	f.SeedState(&livekit.RTPForwarderState{
+		Started:   true,
+		RtpMunger: &livekit.RTPMungerState{},
+		CodecMunger: &livekit.RTPForwarderState_Vp8Munger{
+			Vp8Munger: &livekit.VP8MungerState{
+				ExtLastPictureId: 13467,
+				PictureIdUsed:    true,
+				LastTl0PicIdx:    233,
+				Tl0PicIdxUsed:    true,
+			},
+		},
+	})
+
+	f.DetermineCodec(testutils.TestVP8Codec, nil, livekit.VideoLayer_ONE_SPATIAL_LAYER_PER_STREAM)
+	vp8Munger, ok := f.codecMunger.(*codecmunger.VP8)
+	require.True(t, ok)
+	state, ok := vp8Munger.GetState().(*livekit.VP8MungerState)
+	require.True(t, ok)
+	require.Equal(t, int32(13467), state.ExtLastPictureId)
+	require.True(t, state.PictureIdUsed)
+	require.Equal(t, uint32(233), state.LastTl0PicIdx)
+
+	// VP8 temporal layer selector: a VP8 temporal layer 2 frame is not a switch point from layer 0
+	f.vls.SetCurrent(buffer.VideoLayer{Spatial: 0, Temporal: 0})
+	f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: 2})
+	require.Equal(t, int32(0), f.vls.SelectTemporal(&buffer.ExtPacket{
+		VideoLayer: buffer.VideoLayer{Spatial: 0, Temporal: 2},
+		Packet:     &rtp.Packet{},
+		Payload:    codec.VP8{TID: 2, S: true, Y: true},
+	}))
+}
+
+// TestForwarderAV1SimulcastForwardsAllTemporalLayers checks that AV1 simulcast does not filter
+// temporal layers. Its subscribers get no dependency descriptor, so libwebrtc assembles AV1 frames
+// by sequence number continuity: an outgoing sequence number hole left by a filtered late
+// (retransmitted) packet would stall decoding until the next key frame.
+func TestForwarderAV1SimulcastForwardsAllTemporalLayers(t *testing.T) {
+	f := NewForwarder(
+		webrtc.RTPCodecTypeVideo,
+		logger.GetLogger(),
+		true,  // skipReferenceTS
+		true,  // disableOpportunisticAllocation
+		false, // enableStartAtDesiredQuality
+		nil,
+	)
+	f.DetermineCodec(
+		webrtc.RTPCodecCapability{MimeType: mime.MimeTypeAV1.String(), ClockRate: 90000},
+		nil,
+		livekit.VideoLayer_ONE_SPATIAL_LAYER_PER_STREAM,
+	)
+	f.SetMaxSpatialLayer(buffer.DefaultMaxLayerSpatial)
+	f.SetMaxTemporalLayer(buffer.DefaultMaxLayerTemporal)
+	f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: 0})
+
+	_, ok := f.codecMunger.(*codecmunger.Null)
+	require.True(t, ok)
+
+	for i, tid := range []int32{0, 2, 1, 2} {
+		params := &testutils.TestExtPacketParams{
+			SequenceNumber: 23333 + uint16(i),
+			Timestamp:      0xabcdef + uint32(i)*3000,
+			SSRC:           0x12345678,
+			PayloadSize:    20,
+			Marker:         true,
+			IsKeyFrame:     i == 0,
+			VideoLayer:     buffer.VideoLayer{Spatial: 0, Temporal: tid},
+		}
+		extPkt, err := testutils.GetTestExtPacket(params)
+		require.NoError(t, err)
+
+		tp, err := f.GetTranslationParams(extPkt, 0)
+		require.NoError(t, err)
+		require.False(t, tp.shouldDrop, "tid %d", tid)
 	}
 }

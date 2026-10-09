@@ -66,6 +66,8 @@ func NewVP8FromOther(cm CodecMunger, logger logger.Logger) *VP8 {
 	switch cm := cm.(type) {
 	case *Null:
 		v.SeedState(cm.GetSeededState())
+	case *TemporalFilter:
+		v.SeedState(cm.GetSeededState())
 	case *VP8:
 		v.SeedState(cm.GetState())
 	}

@@ -83,7 +83,7 @@ func deltaFrameOnLayer(spatial, temporal int32) *buffer.ExtPacket {
 	}
 }
 
-// Without a temporal layer selector (VP9/AV1 simulcast), all temporal layers of the selected
+// Without a temporal layer selector (H.264/H.265/AV1 simulcast), all temporal layers of the selected
 // spatial layer are forwarded, so the current temporal layer must follow the target, both at a
 // spatial switch (key frame on temporal layer 0) and when only the target temporal layer changes.
 // Otherwise current != target forever and the forwarder never allows a higher layer.
