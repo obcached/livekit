@@ -239,7 +239,7 @@ type CongestionControlConfig struct {
 func (c CongestionControlConfig) Validate() error {
 	switch pacer.PacerBehavior(c.SendSideBWEPacer) {
 	case "", pacer.PacerBehaviorPassThrough, pacer.PacerBehaviorNoQueue, pacer.PacerBehaviorLeakybucket:
-		return nil
+		return validateQueuingDelayBaselineWindow(c.SendSideBWE.CongestionDetector.QueuingDelayBaselineWindow)
 	default:
 		return fmt.Errorf(
 			"invalid send_side_bwe_pacer %q, must be one of %q, %q, %q",
@@ -249,6 +249,10 @@ func (c CongestionControlConfig) Validate() error {
 			pacer.PacerBehaviorLeakybucket,
 		)
 	}
+}
+
+func validateQueuingDelayBaselineWindow(_ time.Duration) error {
+	return nil
 }
 
 type PlayoutDelayConfig struct {

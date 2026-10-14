@@ -246,6 +246,12 @@ func (p *packetGroup) FinalizedPropagatedQueuingDelay() (int64, bool) {
 	return p.PropagatedQueuingDelay(), true
 }
 
+// FinalizedEffectiveQueuingDelay is the finalized propagated queuing delay minus the
+// windowed-minimum baseline stamped on the group (0 when the baseline window is off).
+func (p *packetGroup) FinalizedEffectiveQueuingDelay() (int64, bool) {
+	return p.FinalizedPropagatedQueuingDelay()
+}
+
 func (p *packetGroup) IsFinalized() bool {
 	return p.isFinalized
 }
