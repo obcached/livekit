@@ -215,7 +215,7 @@ func (q *qdMeasurement) ProcessPacketGroup(pg *packetGroup, groupIdx int) {
 		return
 	}
 
-	pqd, pqdOk := pg.FinalizedPropagatedQueuingDelay()
+	pqd, pqdOk := pg.FinalizedEffectiveQueuingDelay()
 	if !pqdOk {
 		return
 	}
@@ -445,6 +445,12 @@ type CongestionDetectorConfig struct {
 	JQRMinDelay            time.Duration `yaml:"jqr_min_delay,omitempty"`
 	JQRMinTrendCoefficient float64       `yaml:"jqr_min_trend_coefficient,omitempty"`
 	DQRMaxDelay            time.Duration `yaml:"dqr_max_delay,omitempty"`
+
+	// QueuingDelayBaselineWindow re-baselines the queuing delay used by the congestion
+	// state machine on the minimum seen over this sliding window (of group send time),
+	// instead of the all-time minimum, so that a standing path delay step stops reading
+	// as queuing delay after the window. 0 = off (all-time minimum, upstream behaviour).
+	QueuingDelayBaselineWindow time.Duration `yaml:"queuing_delay_baseline_window,omitempty"`
 
 	WeightedLoss       WeightedLossConfig `yaml:"weighted_loss,omitempty"`
 	JQRMinWeightedLoss float64            `yaml:"jqr_min_weighted_loss,omitempty"`
