@@ -146,6 +146,10 @@ type packetGroup struct {
 	aggregateRecvDelta    int64
 	inheritedQueuingDelay int64
 
+	// windowed-minimum baseline stamped once, when the group is first seen finalized
+	queuingDelayBaseline int64
+	isBaselined          bool
+
 	isFinalized bool
 }
 
@@ -249,7 +253,21 @@ func (p *packetGroup) FinalizedPropagatedQueuingDelay() (int64, bool) {
 // FinalizedEffectiveQueuingDelay is the finalized propagated queuing delay minus the
 // windowed-minimum baseline stamped on the group (0 when the baseline window is off).
 func (p *packetGroup) FinalizedEffectiveQueuingDelay() (int64, bool) {
-	return p.FinalizedPropagatedQueuingDelay()
+	pqd, ok := p.FinalizedPropagatedQueuingDelay()
+	if !ok {
+		return 0, false
+	}
+
+	return max(0, pqd-p.queuingDelayBaseline), true
+}
+
+func (p *packetGroup) IsBaselined() bool {
+	return p.isBaselined
+}
+
+func (p *packetGroup) SetQueuingDelayBaseline(baseline int64) {
+	p.queuingDelayBaseline = baseline
+	p.isBaselined = true
 }
 
 func (p *packetGroup) IsFinalized() bool {
@@ -298,6 +316,9 @@ func (p *packetGroup) MarshalLogObject(e zapcore.ObjectEncoder) error {
 	e.AddObject("trafficStats", ts)
 	e.AddInt64("inheritedQueuingDelay", p.inheritedQueuingDelay)
 	e.AddInt64("propagatedQueuingDelay", p.PropagatedQueuingDelay())
+	if p.isBaselined {
+		e.AddInt64("queuingDelayBaseline", p.queuingDelayBaseline)
+	}
 
 	e.AddBool("isFinalized", p.isFinalized)
 	return nil

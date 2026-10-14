@@ -499,6 +499,16 @@ func TestQueuingDelayBaselineWindowEffectiveBounds(t *testing.T) {
 		require.LessOrEqual(t, tr.at, drop, "no state change after the drop")
 	}
 	require.Equal(t, bwe.CongestionStateNone, s.c.CongestionState())
+
+	// a late packet can lower a stamped group's raw value below its baseline (accepted, not re-stamped):
+	// the effective value clamps at 0
+	pg := s.c.packetGroups[len(s.c.packetGroups)-2]
+	raw, ok := pg.FinalizedPropagatedQueuingDelay()
+	require.True(t, ok)
+	pg.SetQueuingDelayBaseline(raw + 1000)
+	eff, ok := pg.FinalizedEffectiveQueuingDelay()
+	require.True(t, ok)
+	require.Equal(t, int64(0), eff)
 }
 
 // U8: probe verdicts are anchored per probe, the window does not leak into them

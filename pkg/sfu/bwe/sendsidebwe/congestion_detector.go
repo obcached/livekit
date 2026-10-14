@@ -185,12 +185,16 @@ type qdMeasurement struct {
 	jqrMinTrendCoefficient float64
 	dqrMaxDelay            int64
 
+	queuingDelayBaselineWindow time.Duration
+
 	numGroups               int
 	numJQRGroups            int
 	numDQRGroups            int
 	minSendTime             int64
 	maxSendTime             int64
-	propagatedQueuingDelays []int64
+	propagatedQueuingDelays []int64 // effective, i. e. the values the decision used
+
+	rawPropagatedQueuingDelays []int64 // only with a baseline window
 
 	isSealed    bool
 	minGroupIdx int
@@ -199,14 +203,22 @@ type qdMeasurement struct {
 	queuingRegion queuingRegion
 }
 
-func newQDMeasurement(jqrConfig CongestionSignalConfig, dqrConfig CongestionSignalConfig, jqrMinDelay int64, jqrMinTrendCoefficient float64, dqrMaxDelay int64) *qdMeasurement {
+func newQDMeasurement(
+	jqrConfig CongestionSignalConfig,
+	dqrConfig CongestionSignalConfig,
+	jqrMinDelay int64,
+	jqrMinTrendCoefficient float64,
+	dqrMaxDelay int64,
+	queuingDelayBaselineWindow time.Duration,
+) *qdMeasurement {
 	return &qdMeasurement{
-		jqrConfig:              jqrConfig,
-		dqrConfig:              dqrConfig,
-		jqrMinDelay:            jqrMinDelay,
-		jqrMinTrendCoefficient: jqrMinTrendCoefficient,
-		dqrMaxDelay:            dqrMaxDelay,
-		queuingRegion:          queuingRegionIndeterminate,
+		jqrConfig:                  jqrConfig,
+		dqrConfig:                  dqrConfig,
+		jqrMinDelay:                jqrMinDelay,
+		jqrMinTrendCoefficient:     jqrMinTrendCoefficient,
+		dqrMaxDelay:                dqrMaxDelay,
+		queuingDelayBaselineWindow: queuingDelayBaselineWindow,
+		queuingRegion:              queuingRegionIndeterminate,
 	}
 }
 
@@ -233,6 +245,10 @@ func (q *qdMeasurement) ProcessPacketGroup(pg *packetGroup, groupIdx int) {
 	q.maxSendTime = max(q.maxSendTime, maxSendTime)
 
 	q.propagatedQueuingDelays = append(q.propagatedQueuingDelays, pqd)
+	if q.queuingDelayBaselineWindow > 0 {
+		rawPQD, _ := pg.FinalizedPropagatedQueuingDelay()
+		q.rawPropagatedQueuingDelays = append(q.rawPropagatedQueuingDelays, rawPQD)
+	}
 
 	switch {
 	case pqd < q.dqrMaxDelay:
@@ -286,6 +302,10 @@ func (q *qdMeasurement) MarshalLogObject(e zapcore.ObjectEncoder) error {
 	e.AddInt64("minSendTime", q.minSendTime)
 	e.AddInt64("maxSendTime", q.maxSendTime)
 	e.AddArray("propagatedQueuingDelays", logger.Int64Slice(q.propagatedQueuingDelays))
+	if q.queuingDelayBaselineWindow > 0 {
+		e.AddArray("rawPropagatedQueuingDelays", logger.Int64Slice(q.rawPropagatedQueuingDelays))
+		e.AddDuration("queuingDelayBaselineWindow", q.queuingDelayBaselineWindow)
+	}
 	e.AddFloat64("trendCoefficient", q.trendCoefficient())
 	e.AddDuration("duration", time.Duration((q.maxSendTime-q.minSendTime)*1000))
 	e.AddBool("isSealed", q.isSealed)
@@ -540,6 +560,7 @@ type congestionDetector struct {
 	twccFeedback *twccFeedback
 
 	packetGroups []*packetGroup
+	qdBaseline   *queuingDelayBaseline // nil when the baseline window is off
 
 	probePacketGroup *probePacketGroup
 	probeRegulator   *ccutils.ProbeRegulator
@@ -579,6 +600,10 @@ func (c *congestionDetector) Reset() {
 	c.rtt = bwe.DefaultRTT
 
 	c.packetGroups = nil
+	c.qdBaseline = nil
+	if c.params.Config.QueuingDelayBaselineWindow > 0 {
+		c.qdBaseline = newQueuingDelayBaseline(c.params.Config.QueuingDelayBaselineWindow)
+	}
 
 	c.probePacketGroup = nil
 	c.probeRegulator = ccutils.NewProbeRegulator(ccutils.ProbeRegulatorParams{
@@ -740,6 +765,7 @@ func (c *congestionDetector) HandleTWCCFeedback(report *rtcp.TransportLayerCC) {
 	}
 
 	c.prunePacketGroups()
+	c.stampQueuingDelayBaselines()
 	shouldNotify, fromState, toState, committedChannelCapacity := c.congestionDetectionStateMachine()
 	c.lock.Unlock()
 
@@ -888,6 +914,31 @@ func (c *congestionDetector) prunePacketGroups() {
 	}
 }
 
+// stampQueuingDelayBaselines pushes every newly finalized group's raw propagated queuing delay
+// into the windowed minimum (oldest to newest) and stamps the group with the window minimum,
+// which includes the group itself, so the effective queuing delay is >= 0 and <= raw.
+// A group is stamped once; a late packet landing in a stamped group does not re-stamp it.
+func (c *congestionDetector) stampQueuingDelayBaselines() {
+	if c.qdBaseline == nil {
+		return
+	}
+
+	for _, pg := range c.packetGroups {
+		if pg.IsBaselined() {
+			continue
+		}
+
+		pqd, ok := pg.FinalizedPropagatedQueuingDelay()
+		if !ok {
+			continue
+		}
+
+		_, maxSendTime := pg.SendWindow()
+		c.qdBaseline.Push(maxSendTime, pqd)
+		pg.SetQueuingDelayBaseline(c.qdBaseline.Min())
+	}
+}
+
 func (c *congestionDetector) updateCongestionSignal(
 	qdJQRConfig CongestionSignalConfig,
 	qdDQRConfig CongestionSignalConfig,
@@ -900,6 +951,7 @@ func (c *congestionDetector) updateCongestionSignal(
 		c.params.Config.JQRMinDelay.Microseconds(),
 		c.params.Config.JQRMinTrendCoefficient,
 		c.params.Config.DQRMaxDelay.Microseconds(),
+		c.params.Config.QueuingDelayBaselineWindow,
 	)
 	c.lossMeasurement = newLossMeasurement(
 		lossJQRConfig,

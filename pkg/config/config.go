@@ -251,8 +251,23 @@ func (c CongestionControlConfig) Validate() error {
 	}
 }
 
-func validateQueuingDelayBaselineWindow(_ time.Duration) error {
-	return nil
+// a shorter window re-baselines away any queue before the congestion detector can see it
+const minQueuingDelayBaselineWindow = 500 * time.Millisecond
+
+// 0 is off; a non-zero window shorter than minQueuingDelayBaselineWindow is rejected, never clamped.
+func validateQueuingDelayBaselineWindow(window time.Duration) error {
+	switch {
+	case window < 0:
+		return fmt.Errorf("invalid queuing_delay_baseline_window %s, must not be negative", window)
+	case window > 0 && window < minQueuingDelayBaselineWindow:
+		return fmt.Errorf(
+			"queuing_delay_baseline_window %s too short to see a queue, must be 0 (off) or at least %s",
+			window,
+			minQueuingDelayBaselineWindow,
+		)
+	default:
+		return nil
+	}
 }
 
 type PlayoutDelayConfig struct {
