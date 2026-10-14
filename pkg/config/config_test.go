@@ -277,6 +277,51 @@ func TestNewConfigTemporalDownStepKeys(t *testing.T) {
 	require.True(t, conf.RTC.CongestionControl.KeyFrameOnTemporalDownStep)
 }
 
+// U10
+func TestNewConfigQueuingDelayBaselineWindow(t *testing.T) {
+	content := func(window string) string {
+		return "rtc:\n  congestion_control:\n    send_side_bwe:\n      congestion_detector:\n        queuing_delay_baseline_window: " + window
+	}
+
+	t.Run("absent is off", func(t *testing.T) {
+		conf, err := NewConfig("", true, nil, nil)
+		require.NoError(t, err)
+		require.Zero(t, conf.RTC.CongestionControl.SendSideBWE.CongestionDetector.QueuingDelayBaselineWindow)
+	})
+
+	t.Run("parses", func(t *testing.T) {
+		conf, err := NewConfig(content("10s"), true, nil, nil)
+		require.NoError(t, err)
+		cd := conf.RTC.CongestionControl.SendSideBWE.CongestionDetector
+		require.Equal(t, 10*time.Second, cd.QueuingDelayBaselineWindow)
+		// sibling defaults are kept
+		require.Equal(t, 50*time.Millisecond, cd.JQRMinDelay)
+	})
+
+	t.Run("validation", func(t *testing.T) {
+		cases := []struct {
+			window  string
+			wantErr bool
+		}{
+			{window: "0s", wantErr: false},
+			{window: "500ms", wantErr: false},
+			{window: "10s", wantErr: false},
+			{window: "300ms", wantErr: true},
+			{window: "-1s", wantErr: true},
+		}
+		for _, tc := range cases {
+			t.Run(tc.window, func(t *testing.T) {
+				_, err := NewConfig(content(tc.window), true, nil, nil)
+				if tc.wantErr {
+					require.ErrorContains(t, err, "queuing_delay_baseline_window")
+					return
+				}
+				require.NoError(t, err)
+			})
+		}
+	})
+}
+
 func writeSecretFile(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "secret")
