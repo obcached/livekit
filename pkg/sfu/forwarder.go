@@ -110,6 +110,9 @@ type VideoAllocation struct {
 	RequestLayerSpatial int32
 	MaxLayer            buffer.VideoLayer
 	DistanceToDesired   float64
+	// a deficient, unpaused cooperative allocation of a temporally filtered simulcast stream
+	// that keeps the current spatial layer and lowers the temporal layer below the current one
+	TemporalDownStep bool
 }
 
 func (v *VideoAllocation) String() string {
@@ -134,6 +137,7 @@ func (v *VideoAllocation) MarshalLogObject(e zapcore.ObjectEncoder) error {
 
 	e.AddString("PauseReason", v.PauseReason.String())
 	e.AddBool("IsDeficient", v.IsDeficient)
+	e.AddBool("TemporalDownStep", v.TemporalDownStep)
 	e.AddInt64("BandwidthRquested", v.BandwidthRequested)
 	e.AddInt64("BandwidthDelta", v.BandwidthDelta)
 	e.AddInt64("BandwidthNeeded", v.BandwidthNeeded)
@@ -273,6 +277,7 @@ type Forwarder struct {
 	refInfos                 [buffer.DefaultMaxLayerSpatial + 1]refInfo
 	refVideoLayerMode        livekit.VideoLayer_Mode
 	isDDAvailable            bool
+	temporalFiltered         bool // a temporal layer selector drops temporal layers above target
 
 	provisional *VideoAllocationProvisional
 
@@ -410,6 +415,7 @@ func (f *Forwarder) DetermineCodec(codec webrtc.RTPCodecCapability, extensions [
 	f.mime = toMimeType
 	f.clockRate = codec.ClockRate
 	f.refVideoLayerMode = videoLayerMode
+	f.temporalFiltered = false
 
 	ddAvailable := func(exts []webrtc.RTPHeaderExtensionParameter) bool {
 		for _, ext := range exts {
@@ -431,6 +437,7 @@ func (f *Forwarder) DetermineCodec(codec webrtc.RTPCodecCapability, extensions [
 			f.isDDAvailable = false
 			f.codecMunger = codecmunger.NewVP8FromOther(f.codecMunger, f.logger)
 			f.vls.SetTemporalLayerSelector(temporallayerselector.NewVP8(f.logger))
+			f.temporalFiltered = true
 		}
 
 	case mime.MimeTypeH264, mime.MimeTypeH265:
@@ -514,6 +521,7 @@ func (f *Forwarder) setDDTemporalFilter(prevDDForwarder *videolayerselector.DDFo
 	f.isDDAvailable = true
 	f.codecMunger = codecmunger.NewDDTemporal(f.mime, f.logger)
 	f.vls.SetTemporalLayerSelector(temporallayerselector.NewDependencyDescriptor(f.logger))
+	f.temporalFiltered = true
 	// the downtrack keeps its SSRC, so the frame numbers continue
 	f.ddForwarder = videolayerselector.NewDDForwarderFromOther(prevDDForwarder, f.logger)
 	f.ddForwarder.SeedState(f.ddForwarderSeed)
@@ -526,6 +534,7 @@ func (f *Forwarder) setUnfilteredTemporal() {
 	f.isDDAvailable = false
 	f.codecMunger = codecmunger.NewNull(f.logger)
 	f.vls.SetTemporalLayerSelector(temporallayerselector.NewNull())
+	f.temporalFiltered = false
 }
 
 func (f *Forwarder) GetState() *livekit.RTPForwarderState {
@@ -1497,6 +1506,11 @@ func (f *Forwarder) ProvisionalAllocateCommit() VideoAllocation {
 			}
 		}
 	}
+
+	cur := f.vls.GetCurrent()
+	alloc.TemporalDownStep = alloc.IsDeficient && alloc.PauseReason == VideoPauseReasonNone &&
+		sfuutils.IsSimulcastMode(f.refVideoLayerMode) && f.temporalFiltered && cur.IsValid() &&
+		alloc.TargetLayer.Spatial == cur.Spatial && alloc.TargetLayer.Temporal < cur.Temporal
 
 	return f.updateAllocation(alloc, "cooperative")
 }

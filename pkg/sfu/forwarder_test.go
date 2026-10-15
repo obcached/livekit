@@ -695,6 +695,94 @@ func TestForwarderProvisionalAllocate(t *testing.T) {
 	require.Equal(t, buffer.InvalidLayer, f.CurrentLayer())
 }
 
+func TestForwarderTemporalDownStep(t *testing.T) {
+	bitrates := Bitrates{
+		{1, 2, 3, 4},
+		{5, 6, 7, 8},
+		{9, 10, 11, 12},
+	}
+	vp8 := testutils.TestVP8Codec
+	vp9 := webrtc.RTPCodecCapability{MimeType: mime.MimeTypeVP9.String(), ClockRate: 90000}
+	h264 := webrtc.RTPCodecCapability{MimeType: mime.MimeTypeH264.String(), ClockRate: 90000}
+	withDD := []webrtc.RTPHeaderExtensionParameter{{URI: dd.ExtensionURI}}
+	sim := livekit.VideoLayer_ONE_SPATIAL_LAYER_PER_STREAM
+	svc := livekit.VideoLayer_MULTIPLE_SPATIAL_LAYERS_PER_STREAM
+
+	type tc struct {
+		name     string
+		codec    webrtc.RTPCodecCapability
+		exts     []webrtc.RTPHeaderExtensionParameter
+		mode     livekit.VideoLayer_Mode
+		current  buffer.VideoLayer
+		target   buffer.VideoLayer // previous target, InvalidLayer = same as current
+		allocate buffer.VideoLayer // InvalidLayer = nothing fits (pause)
+		setup    func(f *Forwarder)
+		// precondition on the committed allocation
+		deficient bool
+		pause     VideoPauseReason
+		want      bool
+	}
+	s2t2 := buffer.VideoLayer{Spatial: 2, Temporal: 2}
+	cases := []tc{
+		{name: "vp9 sim dd t2->t1", codec: vp9, exts: withDD, mode: sim, current: s2t2, allocate: buffer.VideoLayer{Spatial: 2, Temporal: 1}, deficient: true, want: true},
+		{name: "vp9 sim dd t2->t0", codec: vp9, exts: withDD, mode: sim, current: s2t2, allocate: buffer.VideoLayer{Spatial: 2, Temporal: 0}, deficient: true, want: true},
+		{name: "vp8 sim t2->t1", codec: vp8, mode: sim, current: s2t2, allocate: buffer.VideoLayer{Spatial: 2, Temporal: 1}, deficient: true, want: true},
+		{name: "vp8 sim dd t2->t1", codec: vp8, exts: withDD, mode: sim, current: s2t2, allocate: buffer.VideoLayer{Spatial: 2, Temporal: 1}, deficient: true, want: true},
+		{name: "vp9 sim without dd (unfiltered temporal)", codec: vp9, mode: sim, current: s2t2, allocate: buffer.VideoLayer{Spatial: 2, Temporal: 1}, deficient: true},
+		{name: "spatial step", codec: vp9, exts: withDD, mode: sim, current: s2t2, allocate: buffer.VideoLayer{Spatial: 1, Temporal: 1}, deficient: true},
+		{
+			name: "not deficient", codec: vp9, exts: withDD, mode: sim, current: s2t2, allocate: buffer.VideoLayer{Spatial: 2, Temporal: 1},
+			setup: func(f *Forwarder) { f.SetMaxTemporalLayer(1) },
+		},
+		{name: "paused (bandwidth)", codec: vp9, exts: withDD, mode: sim, current: s2t2, allocate: buffer.InvalidLayer, deficient: true, pause: VideoPauseReasonBandwidth},
+		{
+			name: "target lowered but above current (climb)", codec: vp9, exts: withDD, mode: sim,
+			current: buffer.VideoLayer{Spatial: 2, Temporal: 0}, target: s2t2, allocate: buffer.VideoLayer{Spatial: 2, Temporal: 1}, deficient: true,
+		},
+		{name: "deficient at current (no step)", codec: vp9, exts: withDD, mode: sim, current: buffer.VideoLayer{Spatial: 2, Temporal: 1}, allocate: buffer.VideoLayer{Spatial: 2, Temporal: 1}, deficient: true},
+		{name: "h264 sim", codec: h264, mode: sim, current: buffer.VideoLayer{Spatial: 2, Temporal: 0}, allocate: buffer.VideoLayer{Spatial: 2, Temporal: 0}, deficient: true},
+		{name: "vp9 svc dd", codec: vp9, exts: withDD, mode: svc, current: s2t2, allocate: buffer.VideoLayer{Spatial: 2, Temporal: 1}, deficient: true},
+		{name: "vp8 not simulcast mode", codec: vp8, mode: livekit.VideoLayer_MODE_UNUSED, current: s2t2, allocate: buffer.VideoLayer{Spatial: 2, Temporal: 1}, deficient: true},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := NewForwarder(webrtc.RTPCodecTypeVideo, logger.GetLogger(), true, true, true, nil)
+			f.DetermineCodec(c.codec, c.exts, c.mode)
+			f.SetMaxSpatialLayer(buffer.DefaultMaxLayerSpatial)
+			f.SetMaxTemporalLayer(buffer.DefaultMaxLayerTemporal)
+			f.SetMaxPublishedLayer(buffer.DefaultMaxLayerSpatial)
+			f.SetMaxTemporalLayerSeen(buffer.DefaultMaxLayerTemporal)
+			f.ForceLayerForTest(c.current)
+			if c.target.IsValid() {
+				f.vls.SetTarget(c.target)
+			}
+			if c.setup != nil {
+				c.setup(f)
+			}
+
+			// precondition: current and previous target as the row says
+			require.Equal(t, c.current, f.CurrentLayer())
+			if c.target.IsValid() {
+				require.Equal(t, c.target, f.TargetLayer())
+			} else {
+				require.Equal(t, c.current, f.TargetLayer())
+			}
+
+			f.ProvisionalAllocatePrepare(nil, bitrates)
+			if c.allocate.IsValid() {
+				ok, _ := f.ProvisionalAllocate(bitrates[2][3], c.allocate, true, false)
+				require.True(t, ok)
+			}
+			alloc := f.ProvisionalAllocateCommit()
+
+			require.Equal(t, c.deficient, alloc.IsDeficient)
+			require.Equal(t, c.pause, alloc.PauseReason)
+			require.Equal(t, c.want, alloc.TemporalDownStep)
+		})
+	}
+}
+
 func TestForwarderProvisionalAllocateMute(t *testing.T) {
 	f := newForwarder(testutils.TestVP8Codec, webrtc.RTPCodecTypeVideo)
 	f.SetMaxSpatialLayer(buffer.DefaultMaxLayerSpatial)
