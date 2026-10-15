@@ -2125,6 +2125,56 @@ func TestForwarderVP8TemporalUpSwitchWithDependencyDescriptor(t *testing.T) {
 	require.Equal(t, int32(1), f.vls.GetCurrent().Temporal)
 }
 
+// The key frame a temporal-only down-step requests must not raise a dependency descriptor
+// stream above the new target.
+func TestForwarderTemporalDownStepDDKeyFrameStaysAtTarget(t *testing.T) {
+	f := NewForwarder(webrtc.RTPCodecTypeVideo, logger.GetLogger(), true, true, true, nil)
+	f.DetermineCodec(testutils.TestVP8Codec, []webrtc.RTPHeaderExtensionParameter{{URI: dd.ExtensionURI}}, livekit.VideoLayer_ONE_SPATIAL_LAYER_PER_STREAM)
+	require.IsType(t, &codecmunger.DDTemporal{}, f.codecMunger)
+	f.SetMaxSpatialLayer(0)
+	f.SetMaxTemporalLayer(2)
+	f.SetMaxPublishedLayer(0)
+	f.SetMaxTemporalLayerSeen(2)
+	f.ForceLayerForTest(buffer.VideoLayer{Spatial: 0, Temporal: 2})
+
+	packet := func(frameNum uint64, tid int, dtis string, frameDiffs []int, isKeyFrame bool) *buffer.ExtPacket {
+		extPkt, err := testutils.GetTestExtPacketVP8DD(
+			&testutils.TestExtPacketParams{SequenceNumber: uint16(frameNum), PayloadSize: 20, Marker: true, IsKeyFrame: isKeyFrame},
+			&testutils.TestDDParams{
+				FirstPacketInFrame: true,
+				ExtFrameNum:        frameNum,
+				TemporalID:         tid,
+				DTIs:               dtis,
+				FrameDiffs:         frameDiffs,
+				DecodeTargets:      testutils.TestVP8DecodeTargets,
+			},
+		)
+		require.NoError(t, err)
+		return extPkt
+	}
+
+	require.Equal(t, int32(2), f.vls.SelectTemporal(packet(0, 0, "SSS", nil, true)))
+	require.Equal(t, int32(2), f.vls.GetCurrent().Temporal, "precondition: forwarding T2")
+
+	var bitrates Bitrates
+	bitrates[0][0], bitrates[0][1], bitrates[0][2] = 100, 200, 400
+	f.ProvisionalAllocatePrepare(nil, bitrates)
+	ok, _ := f.ProvisionalAllocate(250, buffer.VideoLayer{Spatial: 0, Temporal: 1}, false, false)
+	require.True(t, ok)
+	alloc := f.ProvisionalAllocateCommit()
+	require.True(t, alloc.TemporalDownStep, "precondition: a temporal-only down-step")
+
+	f.vls.SelectTemporal(packet(1, 2, "--D", []int{1}, false))
+	require.LessOrEqual(t, f.vls.GetCurrent().Temporal, int32(1))
+
+	// the requested key frame
+	require.LessOrEqual(t, f.vls.SelectTemporal(packet(2, 0, "SSS", nil, true)), int32(1))
+	require.LessOrEqual(t, f.vls.GetCurrent().Temporal, int32(1), "key frame must not raise current above target")
+	f.vls.SelectTemporal(packet(3, 2, "--D", []int{1}, false))
+	require.LessOrEqual(t, f.vls.GetCurrent().Temporal, int32(1))
+	require.Equal(t, int32(1), f.vls.GetTarget().Temporal)
+}
+
 func TestForwarderVP8DDTemporalFilterAfterGap(t *testing.T) {
 	f := NewForwarder(webrtc.RTPCodecTypeVideo, logger.GetLogger(), true, true, true, nil)
 	f.DetermineCodec(testutils.TestVP8Codec, []webrtc.RTPHeaderExtensionParameter{{URI: dd.ExtensionURI}}, livekit.VideoLayer_MODE_UNUSED)

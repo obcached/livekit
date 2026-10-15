@@ -1791,6 +1791,13 @@ func (d *DownTrack) ProvisionalAllocateCommit() VideoAllocation {
 		// do not retransmit them
 		d.rtxCurbBoundary.Store(d.rtpStats.ExtHighestSequenceNumber())
 	}
+	if allocation.TemporalDownStep && d.params.KeyFrameOnTemporalDownStep && d.writable.Load() {
+		// the spatial layer stays locked, so the key frame requester does not ask for one;
+		// RTX is not stopped, the curb above bounds it
+		d.params.Logger.Infow("PLI on temporal down-step", "allocation", &allocation)
+		d.Receiver().SendPLI(allocation.TargetLayer.Spatial, false)
+		d.rtpStats.UpdatePliTime()
+	}
 	d.postKeyFrameRequestEvent()
 	d.maybeAddTransition(allocation.BandwidthNeeded, allocation.DistanceToDesired, allocation.PauseReason)
 	return allocation
