@@ -52,8 +52,10 @@ func TestQueuingDelayBaselineWindowClockDrift(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			s := newQDSim(t, c.window)
 			var maxRaw int64
+			// the sim never prunes (pruning is wall-clock keyed), so scan only the newest groups:
+			// a full scan per report is O(n^2) over ~28k groups and too slow under -race
 			s.onReport = func() {
-				for _, pg := range s.c.packetGroups {
+				for _, pg := range s.c.packetGroups[max(0, len(s.c.packetGroups)-4):] {
 					if raw, ok := pg.FinalizedPropagatedQueuingDelay(); ok {
 						maxRaw = max(maxRaw, raw)
 					}
@@ -88,9 +90,8 @@ func TestQueuingDelayBaselineWindowClockDrift(t *testing.T) {
 			after := congested.at - driftStart
 			require.GreaterOrEqual(t, after, c.congestedMin)
 			require.LessOrEqual(t, after, c.congestedMax)
-			// stuck: no exit, no probe, until the end of the run
-			_, ok = s.firstTransition(bwe.CongestionStateCongested, bwe.CongestionStateNone)
-			require.False(t, ok)
+			// stuck: NONE -> EARLY_WARNING -> CONGESTED and nothing after, no probe, until the end of the run
+			require.Len(t, s.transitions, 2, "flapped after CONGESTED")
 			require.Equal(t, bwe.CongestionStateCongested, s.c.CongestionState())
 			require.False(t, s.c.CanProbe())
 		})
@@ -99,28 +100,45 @@ func TestQueuingDelayBaselineWindowClockDrift(t *testing.T) {
 
 // KNOWN RISK of the baseline window, documented as current behaviour: the effective queuing
 // delay of a linear ramp of slope r is ~r * window, so a genuine queue growing slower than
-// JQR min delay / window (5 ms/s at 10 s) never crosses the JQR min delay and is hidden.
-// Here a real +3 ms/s queue reaches 180 ms one-way delay over 60 s: CONGESTED without the
-// window, NONE with a 10 s window. Loss detection still applies once the queue overflows.
+// JQR min delay / window (5 ms/s at 10 s, ~1.67 ms/s at 30 s) never crosses the JQR min delay
+// and is hidden. A real +3 ms/s queue reaches 180 ms one-way delay over 60 s: CONGESTED without
+// the window or with a 30 s window, NONE with a 10 s window. A +1.5 ms/s queue is hidden even
+// by the 30 s window. Loss detection still applies once the queue overflows.
 func TestQueuingDelayBaselineWindowHidesSlowRealQueue(t *testing.T) {
-	feed := func(t *testing.T, window time.Duration) *qdSim {
+	feed := func(t *testing.T, window, slope time.Duration) *qdSim {
 		s := newQDSim(t, window)
 		s.run(qdSimGroups(5*time.Second), flatOWD(0), 0)
-		s.run(qdSimGroups(60*time.Second), rampOWD(0, 3*time.Millisecond), 0)
+		s.run(qdSimGroups(60*time.Second), rampOWD(0, slope), 0)
 		return s
 	}
-
-	t.Run("window off detects it", func(t *testing.T) {
-		s := feed(t, 0)
+	detected := func(t *testing.T, s *qdSim) {
 		congested, ok := s.firstTransition(bwe.CongestionStateEarlyWarning, bwe.CongestionStateCongested)
-		require.True(t, ok, "precondition: the queue is real congestion without the window")
+		require.True(t, ok, "the slow real queue must go CONGESTED")
 		require.Equal(t, congestionReasonQueuingDelay, congested.reason)
 		require.Equal(t, bwe.CongestionStateCongested, s.c.CongestionState())
-	})
-
-	t.Run("window 10s hides it", func(t *testing.T) {
-		s := feed(t, 10*time.Second)
+	}
+	hidden := func(t *testing.T, s *qdSim) {
 		require.False(t, s.reached(bwe.CongestionStateCongested), "known risk: slow real queue hidden by the window")
 		require.Equal(t, bwe.CongestionStateNone, s.c.CongestionState())
+	}
+
+	t.Run("window off detects 3 ms/s", func(t *testing.T) {
+		detected(t, feed(t, 0, 3*time.Millisecond))
+	})
+
+	t.Run("window 10s hides 3 ms/s", func(t *testing.T) {
+		hidden(t, feed(t, 10*time.Second, 3*time.Millisecond))
+	})
+
+	t.Run("window 30s detects 3 ms/s", func(t *testing.T) {
+		detected(t, feed(t, 30*time.Second, 3*time.Millisecond))
+	})
+
+	t.Run("window off detects 1.5 ms/s", func(t *testing.T) {
+		detected(t, feed(t, 0, 1500*time.Microsecond))
+	})
+
+	t.Run("window 30s hides 1.5 ms/s", func(t *testing.T) {
+		hidden(t, feed(t, 30*time.Second, 1500*time.Microsecond))
 	})
 }
