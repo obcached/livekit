@@ -228,6 +228,11 @@ type CongestionControlConfig struct {
 	UseSendSideBWE   bool                          `yaml:"use_send_side_bwe,omitempty"`
 	SendSideBWEPacer string                        `yaml:"send_side_bwe_pacer,omitempty"`
 	SendSideBWE      sendsidebwe.SendSideBWEConfig `yaml:"send_side_bwe,omitempty"`
+
+	// on a deficient temporal-only down-step of a simulcast stream, skip retransmissions of packets forwarded before the step
+	RTXCurbOnTemporalDownStep bool `yaml:"rtx_curb_on_temporal_down_step,omitempty"`
+	// on a deficient temporal-only down-step of a simulcast stream, request one key frame (PLI, throttled per layer)
+	KeyFrameOnTemporalDownStep bool `yaml:"key_frame_on_temporal_down_step,omitempty"`
 }
 
 // Validate reports configuration that would otherwise be ignored at runtime.

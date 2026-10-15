@@ -580,6 +580,14 @@ func (p *ParticipantImpl) GetDisableSenderReportPassThrough() bool {
 	return p.params.DisableSenderReportPassThrough
 }
 
+func (p *ParticipantImpl) GetRTXCurbOnTemporalDownStep() bool {
+	return p.params.CongestionControlConfig.RTXCurbOnTemporalDownStep
+}
+
+func (p *ParticipantImpl) GetKeyFrameOnTemporalDownStep() bool {
+	return p.params.CongestionControlConfig.KeyFrameOnTemporalDownStep
+}
+
 func (p *ParticipantImpl) ID() livekit.ParticipantID {
 	return p.id.Load().(livekit.ParticipantID)
 }

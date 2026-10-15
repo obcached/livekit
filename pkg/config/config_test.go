@@ -260,6 +260,23 @@ func TestNewConfigValidatesSendSideBWEPacer(t *testing.T) {
 	}
 }
 
+func TestNewConfigTemporalDownStepKeys(t *testing.T) {
+	conf, err := NewConfig("", true, nil, nil)
+	require.NoError(t, err)
+	require.False(t, conf.RTC.CongestionControl.RTXCurbOnTemporalDownStep, "default off")
+	require.False(t, conf.RTC.CongestionControl.KeyFrameOnTemporalDownStep, "default off")
+
+	conf, err = NewConfig("rtc:\n  congestion_control:\n    rtx_curb_on_temporal_down_step: true", true, nil, nil)
+	require.NoError(t, err)
+	require.True(t, conf.RTC.CongestionControl.RTXCurbOnTemporalDownStep)
+	require.False(t, conf.RTC.CongestionControl.KeyFrameOnTemporalDownStep)
+
+	conf, err = NewConfig("rtc:\n  congestion_control:\n    key_frame_on_temporal_down_step: true", true, nil, nil)
+	require.NoError(t, err)
+	require.False(t, conf.RTC.CongestionControl.RTXCurbOnTemporalDownStep)
+	require.True(t, conf.RTC.CongestionControl.KeyFrameOnTemporalDownStep)
+}
+
 func writeSecretFile(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "secret")

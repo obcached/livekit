@@ -157,6 +157,8 @@ func NewSubscribedTrack(params SubscribedTrackParams) (*SubscribedTrack, error) 
 		DisableSenderReportPassThrough: params.Subscriber.GetDisableSenderReportPassThrough(),
 		SupportsCodecChange:            params.Subscriber.SupportsCodecChange(),
 		EnableStartAtDesiredQuality:    params.EnableStartAtDesiredQuality,
+		RTXCurbOnTemporalDownStep:      params.Subscriber.GetRTXCurbOnTemporalDownStep(),
+		KeyFrameOnTemporalDownStep:     params.Subscriber.GetKeyFrameOnTemporalDownStep(),
 		Listener:                       s,
 	})
 	if err != nil {

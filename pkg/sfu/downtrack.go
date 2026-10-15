@@ -246,6 +246,8 @@ type DownTrackParams struct {
 	SupportsCodecChange            bool
 	StripPacketTrailer             bool
 	EnableStartAtDesiredQuality    bool
+	RTXCurbOnTemporalDownStep      bool
+	KeyFrameOnTemporalDownStep     bool
 	Listener                       DownTrackListener
 }
 

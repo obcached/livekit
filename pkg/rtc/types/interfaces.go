@@ -634,6 +634,8 @@ type LocalParticipant interface {
 	GetPacer() pacer.Pacer
 
 	GetDisableSenderReportPassThrough() bool
+	GetRTXCurbOnTemporalDownStep() bool
+	GetKeyFrameOnTemporalDownStep() bool
 
 	HandleMetrics(senderParticipantID livekit.ParticipantID, batch *livekit.MetricsBatch) error
 	HandleUpdateSubscriptions(

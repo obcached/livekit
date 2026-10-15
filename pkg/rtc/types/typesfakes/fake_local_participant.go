@@ -391,6 +391,16 @@ type FakeLocalParticipant struct {
 	getICEConnectionInfoReturnsOnCall map[int]struct {
 		result1 []*types.ICEConnectionInfo
 	}
+	GetKeyFrameOnTemporalDownStepStub        func() bool
+	getKeyFrameOnTemporalDownStepMutex       sync.RWMutex
+	getKeyFrameOnTemporalDownStepArgsForCall []struct {
+	}
+	getKeyFrameOnTemporalDownStepReturns struct {
+		result1 bool
+	}
+	getKeyFrameOnTemporalDownStepReturnsOnCall map[int]struct {
+		result1 bool
+	}
 	GetLastReliableSequenceStub        func(bool) uint32
 	getLastReliableSequenceMutex       sync.RWMutex
 	getLastReliableSequenceArgsForCall []struct {
@@ -526,6 +536,16 @@ type FakeLocalParticipant struct {
 	getPublisherICESessionUfragReturnsOnCall map[int]struct {
 		result1 string
 		result2 error
+	}
+	GetRTXCurbOnTemporalDownStepStub        func() bool
+	getRTXCurbOnTemporalDownStepMutex       sync.RWMutex
+	getRTXCurbOnTemporalDownStepArgsForCall []struct {
+	}
+	getRTXCurbOnTemporalDownStepReturns struct {
+		result1 bool
+	}
+	getRTXCurbOnTemporalDownStepReturnsOnCall map[int]struct {
+		result1 bool
 	}
 	GetRecentlyDisconnectedParticipantsStub        func() []*livekit.ParticipantInfo
 	getRecentlyDisconnectedParticipantsMutex       sync.RWMutex
@@ -3561,6 +3581,59 @@ func (fake *FakeLocalParticipant) GetICEConnectionInfoReturnsOnCall(i int, resul
 	}{result1}
 }
 
+func (fake *FakeLocalParticipant) GetKeyFrameOnTemporalDownStep() bool {
+	fake.getKeyFrameOnTemporalDownStepMutex.Lock()
+	ret, specificReturn := fake.getKeyFrameOnTemporalDownStepReturnsOnCall[len(fake.getKeyFrameOnTemporalDownStepArgsForCall)]
+	fake.getKeyFrameOnTemporalDownStepArgsForCall = append(fake.getKeyFrameOnTemporalDownStepArgsForCall, struct {
+	}{})
+	stub := fake.GetKeyFrameOnTemporalDownStepStub
+	fakeReturns := fake.getKeyFrameOnTemporalDownStepReturns
+	fake.recordInvocation("GetKeyFrameOnTemporalDownStep", []interface{}{})
+	fake.getKeyFrameOnTemporalDownStepMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeLocalParticipant) GetKeyFrameOnTemporalDownStepCallCount() int {
+	fake.getKeyFrameOnTemporalDownStepMutex.RLock()
+	defer fake.getKeyFrameOnTemporalDownStepMutex.RUnlock()
+	return len(fake.getKeyFrameOnTemporalDownStepArgsForCall)
+}
+
+func (fake *FakeLocalParticipant) GetKeyFrameOnTemporalDownStepCalls(stub func() bool) {
+	fake.getKeyFrameOnTemporalDownStepMutex.Lock()
+	defer fake.getKeyFrameOnTemporalDownStepMutex.Unlock()
+	fake.GetKeyFrameOnTemporalDownStepStub = stub
+}
+
+func (fake *FakeLocalParticipant) GetKeyFrameOnTemporalDownStepReturns(result1 bool) {
+	fake.getKeyFrameOnTemporalDownStepMutex.Lock()
+	defer fake.getKeyFrameOnTemporalDownStepMutex.Unlock()
+	fake.GetKeyFrameOnTemporalDownStepStub = nil
+	fake.getKeyFrameOnTemporalDownStepReturns = struct {
+		result1 bool
+	}{result1}
+}
+
+func (fake *FakeLocalParticipant) GetKeyFrameOnTemporalDownStepReturnsOnCall(i int, result1 bool) {
+	fake.getKeyFrameOnTemporalDownStepMutex.Lock()
+	defer fake.getKeyFrameOnTemporalDownStepMutex.Unlock()
+	fake.GetKeyFrameOnTemporalDownStepStub = nil
+	if fake.getKeyFrameOnTemporalDownStepReturnsOnCall == nil {
+		fake.getKeyFrameOnTemporalDownStepReturnsOnCall = make(map[int]struct {
+			result1 bool
+		})
+	}
+	fake.getKeyFrameOnTemporalDownStepReturnsOnCall[i] = struct {
+		result1 bool
+	}{result1}
+}
+
 func (fake *FakeLocalParticipant) GetLastReliableSequence(arg1 bool) uint32 {
 	fake.getLastReliableSequenceMutex.Lock()
 	ret, specificReturn := fake.getLastReliableSequenceReturnsOnCall[len(fake.getLastReliableSequenceArgsForCall)]
@@ -4283,6 +4356,59 @@ func (fake *FakeLocalParticipant) GetPublisherICESessionUfragReturnsOnCall(i int
 		result1 string
 		result2 error
 	}{result1, result2}
+}
+
+func (fake *FakeLocalParticipant) GetRTXCurbOnTemporalDownStep() bool {
+	fake.getRTXCurbOnTemporalDownStepMutex.Lock()
+	ret, specificReturn := fake.getRTXCurbOnTemporalDownStepReturnsOnCall[len(fake.getRTXCurbOnTemporalDownStepArgsForCall)]
+	fake.getRTXCurbOnTemporalDownStepArgsForCall = append(fake.getRTXCurbOnTemporalDownStepArgsForCall, struct {
+	}{})
+	stub := fake.GetRTXCurbOnTemporalDownStepStub
+	fakeReturns := fake.getRTXCurbOnTemporalDownStepReturns
+	fake.recordInvocation("GetRTXCurbOnTemporalDownStep", []interface{}{})
+	fake.getRTXCurbOnTemporalDownStepMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeLocalParticipant) GetRTXCurbOnTemporalDownStepCallCount() int {
+	fake.getRTXCurbOnTemporalDownStepMutex.RLock()
+	defer fake.getRTXCurbOnTemporalDownStepMutex.RUnlock()
+	return len(fake.getRTXCurbOnTemporalDownStepArgsForCall)
+}
+
+func (fake *FakeLocalParticipant) GetRTXCurbOnTemporalDownStepCalls(stub func() bool) {
+	fake.getRTXCurbOnTemporalDownStepMutex.Lock()
+	defer fake.getRTXCurbOnTemporalDownStepMutex.Unlock()
+	fake.GetRTXCurbOnTemporalDownStepStub = stub
+}
+
+func (fake *FakeLocalParticipant) GetRTXCurbOnTemporalDownStepReturns(result1 bool) {
+	fake.getRTXCurbOnTemporalDownStepMutex.Lock()
+	defer fake.getRTXCurbOnTemporalDownStepMutex.Unlock()
+	fake.GetRTXCurbOnTemporalDownStepStub = nil
+	fake.getRTXCurbOnTemporalDownStepReturns = struct {
+		result1 bool
+	}{result1}
+}
+
+func (fake *FakeLocalParticipant) GetRTXCurbOnTemporalDownStepReturnsOnCall(i int, result1 bool) {
+	fake.getRTXCurbOnTemporalDownStepMutex.Lock()
+	defer fake.getRTXCurbOnTemporalDownStepMutex.Unlock()
+	fake.GetRTXCurbOnTemporalDownStepStub = nil
+	if fake.getRTXCurbOnTemporalDownStepReturnsOnCall == nil {
+		fake.getRTXCurbOnTemporalDownStepReturnsOnCall = make(map[int]struct {
+			result1 bool
+		})
+	}
+	fake.getRTXCurbOnTemporalDownStepReturnsOnCall[i] = struct {
+		result1 bool
+	}{result1}
 }
 
 func (fake *FakeLocalParticipant) GetRecentlyDisconnectedParticipants() []*livekit.ParticipantInfo {

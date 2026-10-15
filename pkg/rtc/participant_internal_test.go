@@ -1283,3 +1283,25 @@ func TestLeaveJoinSession(t *testing.T) {
 	require.Equal(t, 2, tl.OnTrackUnpublishedCallCount())
 	require.Equal(t, 2, tl.OnTrackPublishedCallCount())
 }
+
+func TestTemporalDownStepGetters(t *testing.T) {
+	t.Run("rtx curb alone", func(t *testing.T) {
+		p := newParticipantForTest("test")
+		require.False(t, p.GetRTXCurbOnTemporalDownStep())
+		require.False(t, p.GetKeyFrameOnTemporalDownStep())
+
+		p.params.CongestionControlConfig.RTXCurbOnTemporalDownStep = true
+		require.True(t, p.GetRTXCurbOnTemporalDownStep())
+		require.False(t, p.GetKeyFrameOnTemporalDownStep())
+	})
+
+	t.Run("key frame alone", func(t *testing.T) {
+		p := newParticipantForTest("test")
+		require.False(t, p.GetRTXCurbOnTemporalDownStep())
+		require.False(t, p.GetKeyFrameOnTemporalDownStep())
+
+		p.params.CongestionControlConfig.KeyFrameOnTemporalDownStep = true
+		require.False(t, p.GetRTXCurbOnTemporalDownStep())
+		require.True(t, p.GetKeyFrameOnTemporalDownStep())
+	})
+}
