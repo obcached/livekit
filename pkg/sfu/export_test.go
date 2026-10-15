@@ -87,3 +87,27 @@ const KeyFrameIntervalMaxForTest = keyFrameIntervalMax * time.Millisecond
 func (d *DownTrack) KeyFrameRequesterWakeupsForTest() uint32 {
 	return d.keyFrameRequesterWakeups.Load()
 }
+
+// RetransmitPacketsForTest runs the NACK retransmit path synchronously (no worker).
+func (d *DownTrack) RetransmitPacketsForTest(nacks []uint16) { d.retransmitPackets(nacks) }
+
+// SetNACKRTTForTest sets the sequencer RTT, which sizes the NACK dedupe window min(100 ms, 2*rtt).
+func (d *DownTrack) SetNACKRTTForTest(rtt uint32) { d.sequencer.setRTT(rtt) }
+
+func (d *DownTrack) ForwarderCheckSyncForTest() (bool, int32) { return d.forwarder.CheckSync() }
+
+func (d *DownTrack) IsNACKThrottledForTest() bool { return d.isNACKThrottled.Load() }
+
+func (d *DownTrack) RTXCurbBoundaryForTest() uint64 { return d.rtxCurbBoundary.Load() }
+
+func (d *DownTrack) RTXCurbedForTest() uint32 { return d.rtxCurbed.Load() }
+
+// SetRTXCurbOnTemporalDownStepForTest sets the config gate; the shared harness builds DownTrackParams itself.
+func (d *DownTrack) SetRTXCurbOnTemporalDownStepForTest(on bool) {
+	d.params.RTXCurbOnTemporalDownStep = on
+}
+
+// SetKeyFrameOnTemporalDownStepForTest sets the config gate; the shared harness builds DownTrackParams itself.
+func (d *DownTrack) SetKeyFrameOnTemporalDownStepForTest(on bool) {
+	d.params.KeyFrameOnTemporalDownStep = on
+}

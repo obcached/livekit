@@ -326,6 +326,11 @@ type DownTrack struct {
 
 	isNACKThrottled atomic.Bool
 
+	// after a deficient temporal-only down-step: highest subscriber ext seq forwarded before the
+	// step, retransmissions at or below it are skipped (0 = no curb)
+	rtxCurbBoundary atomic.Uint64
+	rtxCurbed       atomic.Uint32 // NACKed packets skipped since the boundary was set
+
 	activePaddingOnMuteUpTrack atomic.Bool
 
 	streamAllocatorLock     sync.RWMutex
@@ -1198,6 +1203,9 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) int32 {
 
 	if extPkt.IsKeyFrame {
 		d.isNACKThrottled.Store(false)
+		if d.rtxCurbBoundary.Swap(0) != 0 {
+			d.params.Logger.Infow("RTX curb released", "curbed", d.rtxCurbed.Swap(0), "reason", "keyframe")
+		}
 		d.rtpStats.UpdateKeyFrame(1)
 		d.params.Logger.Debugw(
 			"forwarded key frame",
@@ -1778,6 +1786,11 @@ func (d *DownTrack) ProvisionalAllocateGetBestWeightedTransition() VideoTransiti
 
 func (d *DownTrack) ProvisionalAllocateCommit() VideoAllocation {
 	allocation := d.forwarder.ProvisionalAllocateCommit()
+	if allocation.TemporalDownStep && d.params.RTXCurbOnTemporalDownStep {
+		// packets forwarded before the step carry the layers the channel could not take,
+		// do not retransmit them
+		d.rtxCurbBoundary.Store(d.rtpStats.ExtHighestSequenceNumber())
+	}
 	d.postKeyFrameRequestEvent()
 	d.maybeAddTransition(allocation.BandwidthNeeded, allocation.DistanceToDesired, allocation.PauseReason)
 	return allocation
@@ -2468,11 +2481,25 @@ func (d *DownTrack) retransmitPackets(nacks []uint16) {
 
 	receiver := d.Receiver()
 
+	curbBoundary := d.rtxCurbBoundary.Load()
+	if curbBoundary != 0 && !d.forwarder.IsDeficient() {
+		if d.rtxCurbBoundary.CompareAndSwap(curbBoundary, 0) {
+			d.params.Logger.Infow("RTX curb released", "curbed", d.rtxCurbed.Swap(0), "reason", "not-deficient")
+		}
+		curbBoundary = 0
+	}
+
 	nackAcks := uint32(0)
 	nackMisses := uint32(0)
 	numRepeatedNACKs := uint32(0)
+	numCurbed := uint32(0)
 	for _, epm := range d.sequencer.getExtPacketMetas(filtered) {
 		if disallowedLayers[epm.layer] {
+			continue
+		}
+
+		if curbBoundary != 0 && epm.extSequenceNumber <= curbBoundary {
+			numCurbed++
 			continue
 		}
 
@@ -2496,6 +2523,9 @@ func (d *DownTrack) retransmitPackets(nacks []uint16) {
 	}
 
 	d.totalRepeatedNACKs.Add(numRepeatedNACKs)
+	if numCurbed != 0 {
+		d.rtxCurbed.Add(numCurbed)
+	}
 
 	d.rtpStats.UpdateNackProcessed(nackAcks, nackMisses, numRepeatedNACKs)
 }
