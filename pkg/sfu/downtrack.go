@@ -330,6 +330,9 @@ type DownTrack struct {
 	// step, retransmissions at or below it are skipped (0 = no curb)
 	rtxCurbBoundary atomic.Uint64
 	rtxCurbed       atomic.Uint32 // NACKed packets skipped since the boundary was set
+	// subscriber ext seq of the last key frame forwarded while the curb was active (0 = none);
+	// a later step never moves the boundary past it
+	rtxCurbKeyFrameSN atomic.Uint64
 
 	activePaddingOnMuteUpTrack atomic.Bool
 
@@ -1203,8 +1206,13 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) int32 {
 
 	if extPkt.IsKeyFrame {
 		d.isNACKThrottled.Store(false)
-		if d.rtxCurbBoundary.Swap(0) != 0 {
-			d.params.Logger.Infow("RTX curb released", "curbed", d.rtxCurbed.Swap(0), "reason", "keyframe")
+		// the key frame supersedes the curbed backlog but its own packets must stay repairable:
+		// move the boundary to just below it instead of releasing the curb
+		if kfSN := tp.rtp.extSequenceNumber; kfSN > 1 {
+			if b := d.rtxCurbBoundary.Load(); b != 0 && b < kfSN && d.rtxCurbBoundary.CompareAndSwap(b, kfSN-1) {
+				d.rtxCurbKeyFrameSN.Store(kfSN)
+				d.params.Logger.Infow("RTX curb moved to key frame", "curbed", d.rtxCurbed.Swap(0), "rtpsn", kfSN)
+			}
 		}
 		d.rtpStats.UpdateKeyFrame(1)
 		d.params.Logger.Debugw(
@@ -1789,7 +1797,12 @@ func (d *DownTrack) ProvisionalAllocateCommit() VideoAllocation {
 	if allocation.TemporalDownStep && d.params.RTXCurbOnTemporalDownStep {
 		// packets forwarded before the step carry the layers the channel could not take,
 		// do not retransmit them
-		d.rtxCurbBoundary.Store(d.rtpStats.ExtHighestSequenceNumber())
+		boundary := d.rtpStats.ExtHighestSequenceNumber()
+		if kf := d.rtxCurbKeyFrameSN.Load(); kf != 0 && kf-1 < boundary {
+			// do not curb the repair of the key frame answering an earlier step of this episode
+			boundary = kf - 1
+		}
+		d.rtxCurbBoundary.Store(boundary)
 	}
 	if allocation.TemporalDownStep && d.params.KeyFrameOnTemporalDownStep && d.writable.Load() {
 		// the spatial layer stays locked, so the key frame requester does not ask for one;
@@ -2495,6 +2508,7 @@ func (d *DownTrack) retransmitPackets(nacks []uint16) {
 	curbBoundary := d.rtxCurbBoundary.Load()
 	if curbBoundary != 0 && !d.forwarder.IsDeficient() {
 		if d.rtxCurbBoundary.CompareAndSwap(curbBoundary, 0) {
+			d.rtxCurbKeyFrameSN.Store(0)
 			d.params.Logger.Infow("RTX curb released", "curbed", d.rtxCurbed.Swap(0), "reason", "not-deficient")
 		}
 		curbBoundary = 0
