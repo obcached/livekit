@@ -28,7 +28,7 @@ const (
 	defaultRtt           = 70
 	ignoreRetransmission = 100 // Ignore packet retransmission after ignoreRetransmission milliseconds
 	maxAck               = 3
-	// NACKs for packets at or after the key frame answering a temporal down-step (while the RTX curb
+	// NACKs for the packets of the key frame answering a temporal down-step (while the RTX curb
 	// is active) are served beyond maxAck up to this cap: Chrome retries up to 10 times
 	maxAckKeyFrameRange = 12
 )
@@ -336,10 +336,11 @@ func (s *sequencer) pushPadding(extStartSNInclusive uint64, extEndSNInclusive ui
 	s.updateSNOffset()
 }
 
-// getExtPacketMetas returns the metadata of the NACKed packets to retransmit. Packets with a
-// subscriber ext sequence number >= uncappedFromExtSN get maxAckKeyFrameRange retransmissions
-// instead of maxAck (math.MaxUint64 = no exemption).
-func (s *sequencer) getExtPacketMetas(seqNo []uint16, uncappedFromExtSN uint64) []extPacketMeta {
+// getExtPacketMetas returns the metadata of the NACKed packets to retransmit. The packets of the
+// key frame starting at uncappedFromExtSN (subscriber ext sequence number >= uncappedFromExtSN and
+// subscriber timestamp == uncappedTS) get maxAckKeyFrameRange retransmissions instead of maxAck;
+// later frames keep maxAck (math.MaxUint64 = no exemption).
+func (s *sequencer) getExtPacketMetas(seqNo []uint16, uncappedFromExtSN uint64, uncappedTS uint32) []extPacketMeta {
 	s.Lock()
 	defer s.Unlock()
 
@@ -393,8 +394,8 @@ func (s *sequencer) getExtPacketMetas(seqNo []uint16, uncappedFromExtSN uint64) 
 			continue
 		}
 		limit := uint8(maxAck)
-		if extSN >= uncappedFromExtSN {
-			// the key frame answering a down-step and what follows it stay repairable
+		if extSN >= uncappedFromExtSN && meta.timestamp == uncappedTS {
+			// the key frame answering a down-step stays repairable, the frames after it do not
 			limit = maxAckKeyFrameRange
 		}
 		if meta.nacked >= limit {

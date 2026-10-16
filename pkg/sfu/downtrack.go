@@ -339,6 +339,9 @@ type DownTrack struct {
 	// a later step never moves the boundary past it
 	rtxCurbKeyFrameSN atomic.Uint64
 	rtxCurbKeyFrameAt atomic.Int64 // mono nanos the mark was set, stored before it
+	// subscriber RTP timestamp of the marked key frame, stored before the mark: with the mark it
+	// bounds the exemption to the key frame's own packets
+	rtxCurbKeyFrameTS atomic.Uint32
 	// NACKed packets at or after the key frame mark read from the bucket for a retransmission beyond
 	// maxAck. Like rtxCurbed, each curb log line ("moved", "released") reports and resets it: the
 	// value belongs to the segment that line closes, a run's total is the sum over its lines.
@@ -1222,6 +1225,7 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) int32 {
 			if kfSN := tp.rtp.extSequenceNumber; kfSN > 1 && d.rtxCurbBoundary.Load() != 0 {
 				// the mark goes first: a commit that re-reads it after its store cannot arm above the key frame
 				d.rtxCurbKeyFrameAt.Store(mono.UnixNano())
+				d.rtxCurbKeyFrameTS.Store(uint32(tp.rtp.extTimestamp))
 				d.rtxCurbKeyFrameSN.Store(kfSN)
 				for {
 					b := d.rtxCurbBoundary.Load()
@@ -2558,17 +2562,19 @@ func (d *DownTrack) retransmitPackets(nacks []uint16) {
 	nackMisses := uint32(0)
 	numRepeatedNACKs := uint32(0)
 	numCurbed := uint32(0)
-	// while the curb is active, the key frame it moved to and what follows stay repairable beyond maxAck,
-	// for the repair window only: not for the rest of a deficient episode
+	// while the curb is active, the packets of the key frame it moved to stay repairable beyond maxAck,
+	// for the repair window only: not the frames after it, not the rest of a deficient episode
 	uncappedFrom := uint64(math.MaxUint64)
+	uncappedTS := uint32(0)
 	if curbBoundary != 0 {
 		if kf := d.rtxCurbKeyFrameSN.Load(); kf != 0 {
 			if time.Duration(mono.UnixNano()-d.rtxCurbKeyFrameAt.Load()) < rtxCurbKeyFrameRepairWindow {
 				uncappedFrom = kf
+				uncappedTS = d.rtxCurbKeyFrameTS.Load()
 			}
 		}
 	}
-	for _, epm := range d.sequencer.getExtPacketMetas(filtered, uncappedFrom) {
+	for _, epm := range d.sequencer.getExtPacketMetas(filtered, uncappedFrom, uncappedTS) {
 		if disallowedLayers[epm.layer] {
 			continue
 		}

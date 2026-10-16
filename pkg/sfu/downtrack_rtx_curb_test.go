@@ -124,6 +124,17 @@ func (r *stepRig) write(spatial int32, tid uint8, key bool) (*buffer.ExtPacket, 
 	return extPkt, r.dt.WriteRTP(extPkt, spatial) > 0
 }
 
+// writeContinuation writes, and requires forwarded, the next packet of the frame written last
+// (same timestamp and picture ID, not flagged as a key frame).
+func (r *stepRig) writeContinuation(tid uint8) {
+	r.ts -= 3000
+	r.pid--
+	if tid == 0 {
+		r.tl0--
+	}
+	r.writeForwarded(tid, false)
+}
+
 // writeForwarded writes a spatial 0 packet that must be forwarded.
 func (r *stepRig) writeForwarded(tid uint8, key bool) {
 	extPkt, forwarded := r.write(0, tid, key)
@@ -594,7 +605,7 @@ func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 		r.preStep()
 		r.stepDown(s0t1)
 		r.writeForwarded(0, true) // K1
-		r.writeForwarded(0, false)
+		r.writeContinuation(0)    // K1, second packet
 		r.writeForwarded(0, false)
 		sns := r.subSNs(7)
 		kf := sns[4]
@@ -607,7 +618,12 @@ func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 		require.EqualValues(t, 1, r.dt.RTXUncappedForTest(), "one retransmission beyond maxAck")
 
 		rtx, _ = r.nackTimes(sns[5], 4)
-		require.Equal(t, []int{1, 1, 1, 1}, rtx, "packets after K1 are in range too")
+		require.Equal(t, []int{1, 1, 1, 1}, rtx, "K1's own packets are in range")
+		require.EqualValues(t, 2, r.dt.RTXUncappedForTest())
+
+		rtx, curbed = r.nackTimes(sns[6], 4)
+		require.Equal(t, []int{1, 1, 1, 0}, rtx, "the frame after K1 keeps maxAck")
+		require.Equal(t, []int{0, 0, 0, 0}, curbed)
 		require.EqualValues(t, 2, r.dt.RTXUncappedForTest())
 
 		// a pre-step SN consumes its budget before the curb check: 3 refusals are counted
@@ -627,7 +643,7 @@ func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 		r.preStep()
 		r.stepDown(s0t1)
 		r.writeForwarded(0, true) // K1
-		r.writeForwarded(0, false)
+		r.writeContinuation(0)    // K1, second packet
 		sns := r.subSNs(6)
 		kf := sns[4]
 		require.EqualValues(t, kf-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K1 moved the boundary")
@@ -639,7 +655,7 @@ func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 		require.Equal(t, 1, x, "inside the window K1 is served beyond maxAck")
 
 		rtx, _ = r.nackTimes(sns[5], 3)
-		require.Equal(t, []int{1, 1, 1}, rtx, "precondition: post-K1 packet at maxAck")
+		require.Equal(t, []int{1, 1, 1}, rtx, "precondition: K1's second packet at maxAck")
 		r.dt.AgeRTXCurbKeyFrameMarkForTest(RTXCurbKeyFrameRepairWindowForTest + time.Millisecond)
 		x, c := r.nack(sns[5])
 		require.Zero(t, x, "after the window the key frame range is back to maxAck")
@@ -684,7 +700,7 @@ func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 		r.preStep()
 		r.stepDown(s0t1)
 		r.writeForwarded(0, true)
-		r.writeForwarded(0, false)
+		r.writeContinuation(0)
 		sns := r.subSNs(6)
 		kf := sns[4]
 		require.EqualValues(t, kf-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K1 moved the boundary")
@@ -747,7 +763,7 @@ func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 		r.preStep()
 		r.stepDown(s0t1)
 		r.writeForwarded(0, true) // K1 of episode 1
-		r.writeForwarded(0, false)
+		r.writeContinuation(0)
 		sns := r.subSNs(6)
 		r.nackTimes(sns[5], 4)
 		require.EqualValues(t, 1, r.dt.RTXUncappedForTest(), "precondition: one retransmission beyond maxAck in episode 1")
