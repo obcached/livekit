@@ -15,6 +15,7 @@
 package sfu_test
 
 import (
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -574,9 +575,23 @@ func (r *stepRig) nackTimes(sn uint16, n int) (rtx []int, curbed []int) {
 	return rtx, curbed
 }
 
+// bucket makes every ReadRTP a hit (a bare RTP header: the retransmit stops at the codec header
+// size check, so nothing reaches the subscriber) or a miss (not io.EOF, the batch goes on).
+func (r *stepRig) bucket(hit bool) {
+	r.dh.receiver.ReadRTPCalls(func(buf []byte, _ uint8, _ uint64) (int, error) {
+		if !hit {
+			return 0, errBucketMiss
+		}
+		return copy(buf, []byte{0x80, 96, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1}), nil
+	})
+}
+
+var errBucketMiss = errors.New("bucket miss")
+
 func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 	t.Run("D1 the key frame is retransmitted beyond maxAck under the curb", func(t *testing.T) {
 		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.bucket(true)
 		r.preStep()
 		r.stepDown(s0t1)
 		r.writeForwarded(0, true) // K1
@@ -620,8 +635,9 @@ func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 		require.Zero(t, r.dt.RTXUncappedForTest())
 	})
 
-	t.Run("D3 a release clears the exemption", func(t *testing.T) {
+	t.Run("D2b a bucket miss is not counted as uncapped", func(t *testing.T) {
 		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.bucket(false)
 		r.preStep()
 		r.stepDown(s0t1)
 		r.writeForwarded(0, true)
@@ -629,9 +645,28 @@ func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 		kf := sns[4]
 		require.EqualValues(t, kf-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K1 moved the boundary")
 
+		rtx, _ := r.nackTimes(kf, 4)
+		require.Equal(t, []int{1, 1, 1, 1}, rtx, "precondition: the 4th NACK reaches the bucket")
+		require.Zero(t, r.dt.RTXUncappedForTest(), "a miss puts nothing on the wire")
+	})
+
+	t.Run("D3 a release clears the exemption and reports the uncapped count", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.bucket(true)
+		r.preStep()
+		r.stepDown(s0t1)
+		r.writeForwarded(0, true)
+		r.writeForwarded(0, false)
+		sns := r.subSNs(6)
+		kf := sns[4]
+		require.EqualValues(t, kf-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K1 moved the boundary")
+		r.nackTimes(sns[5], 4)
+		require.EqualValues(t, 1, r.dt.RTXUncappedForTest(), "precondition: one retransmission beyond maxAck")
+
 		require.False(t, r.commit(1_000_000, s0t2).IsDeficient)
 		r.nack(sns[0])
 		require.Zero(t, r.dt.RTXCurbBoundaryForTest(), "precondition: not-deficient release")
+		require.Zero(t, r.dt.RTXUncappedForTest(), "the release line reports and resets the uncapped count")
 
 		rtx, _ := r.nackTimes(kf, 4)
 		require.Equal(t, []int{1, 1, 1, 0}, rtx, "after the release K1 is back to maxAck")

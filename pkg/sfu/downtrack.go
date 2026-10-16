@@ -333,7 +333,9 @@ type DownTrack struct {
 	// subscriber ext seq of the last key frame forwarded while the curb was active (0 = none);
 	// a later step never moves the boundary past it
 	rtxCurbKeyFrameSN atomic.Uint64
-	// NACKed packets at or after the key frame mark retransmitted beyond maxAck since the last curb log line
+	// NACKed packets at or after the key frame mark read from the bucket for a retransmission beyond
+	// maxAck. Like rtxCurbed, each curb log line ("moved", "released") reports and resets it: the
+	// value belongs to the segment that line closes, a run's total is the sum over its lines.
 	rtxUncapped atomic.Uint32
 
 	activePaddingOnMuteUpTrack atomic.Bool
@@ -2563,9 +2565,6 @@ func (d *DownTrack) retransmitPackets(nacks []uint16) {
 		}
 
 		nackAcks++
-		if epm.nacked > maxAck {
-			d.rtxUncapped.Add(1)
-		}
 
 		pktBuff := *src
 		n, err := receiver.ReadRTP(pktBuff, uint8(epm.layer), epm.sourceSeqNo)
@@ -2575,6 +2574,11 @@ func (d *DownTrack) retransmitPackets(nacks []uint16) {
 			}
 			nackMisses++
 			continue
+		}
+
+		// counted after the bucket read: a miss beyond maxAck puts nothing on the wire
+		if epm.nacked > maxAck {
+			d.rtxUncapped.Add(1)
 		}
 
 		if epm.nacked > 1 {
