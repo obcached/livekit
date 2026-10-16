@@ -1794,7 +1794,11 @@ func (d *DownTrack) ProvisionalAllocateCommit() VideoAllocation {
 	if allocation.TemporalDownStep && d.params.KeyFrameOnTemporalDownStep && d.writable.Load() {
 		// the spatial layer stays locked, so the key frame requester does not ask for one;
 		// RTX is not stopped, the curb above bounds it
-		d.params.Logger.Infow("PLI on temporal down-step", "allocation", &allocation)
+		d.params.Logger.Infow(
+			"PLI on temporal down-step",
+			"spatial", allocation.TargetLayer.Spatial,
+			"targetTemporal", allocation.TargetLayer.Temporal,
+		)
 		d.Receiver().SendPLI(allocation.TargetLayer.Spatial, false)
 		d.rtpStats.UpdatePliTime()
 	}
