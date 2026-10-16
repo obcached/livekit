@@ -15,6 +15,7 @@
 package sfu
 
 import (
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -36,12 +37,12 @@ func Test_sequencer(t *testing.T) {
 	seq.push(time.Now().UnixNano(), 518, 518+uint64(off), 123, true, 2, nil, 0, nil, nil, 0)
 
 	req := []uint16{57, 58, 62, 63, 513, 514, 515, 516, 517}
-	res := seq.getExtPacketMetas(req)
+	res := seq.getExtPacketMetas(req, math.MaxUint64)
 	// nothing should be returned as not enough time has elapsed since sending packet
 	require.Equal(t, 0, len(res))
 
 	time.Sleep((ignoreRetransmission + 10) * time.Millisecond)
-	res = seq.getExtPacketMetas(req)
+	res = seq.getExtPacketMetas(req, math.MaxUint64)
 	require.Equal(t, len(req), len(res))
 	for i, val := range res {
 		require.Equal(t, val.targetSeqNo, req[i])
@@ -50,10 +51,10 @@ func Test_sequencer(t *testing.T) {
 		require.Equal(t, val.extSequenceNumber, uint64(req[i]))
 		require.Equal(t, val.extTimestamp, uint64(123))
 	}
-	res = seq.getExtPacketMetas(req)
+	res = seq.getExtPacketMetas(req, math.MaxUint64)
 	require.Equal(t, 0, len(res))
 	time.Sleep((ignoreRetransmission + 10) * time.Millisecond)
-	res = seq.getExtPacketMetas(req)
+	res = seq.getExtPacketMetas(req, math.MaxUint64)
 	require.Equal(t, len(req), len(res))
 	for i, val := range res {
 		require.Equal(t, val.targetSeqNo, req[i])
@@ -64,17 +65,17 @@ func Test_sequencer(t *testing.T) {
 	}
 
 	seq.push(time.Now().UnixNano(), 521, 521+uint64(off), 123, true, 1, nil, 0, nil, nil, 0)
-	m := seq.getExtPacketMetas([]uint16{521 + off})
+	m := seq.getExtPacketMetas([]uint16{521 + off}, math.MaxUint64)
 	require.Equal(t, 0, len(m))
 	time.Sleep((ignoreRetransmission + 10) * time.Millisecond)
-	m = seq.getExtPacketMetas([]uint16{521 + off})
+	m = seq.getExtPacketMetas([]uint16{521 + off}, math.MaxUint64)
 	require.Equal(t, 1, len(m))
 
 	seq.push(time.Now().UnixNano(), 505, 505+uint64(off), 123, false, 1, nil, 0, nil, nil, 0)
-	m = seq.getExtPacketMetas([]uint16{505 + off})
+	m = seq.getExtPacketMetas([]uint16{505 + off}, math.MaxUint64)
 	require.Equal(t, 0, len(m))
 	time.Sleep((ignoreRetransmission + 10) * time.Millisecond)
-	m = seq.getExtPacketMetas([]uint16{505 + off})
+	m = seq.getExtPacketMetas([]uint16{505 + off}, math.MaxUint64)
 	require.Equal(t, 1, len(m))
 }
 
@@ -92,23 +93,23 @@ func Test_sequencer_flush(t *testing.T) {
 
 	// even after enough time elapses, a NACK for a pre-flush packet retransmits nothing
 	time.Sleep((ignoreRetransmission + 10) * time.Millisecond)
-	require.Equal(t, 0, len(seq.getExtPacketMetas(preFlush)))
+	require.Equal(t, 0, len(seq.getExtPacketMetas(preFlush, math.MaxUint64)))
 
 	// the sequencer re-initializes on the next push and works normally for new packets
 	for i := uint64(200); i < 210; i++ {
 		seq.push(time.Now().UnixNano(), i, i+uint64(off), 456, true, 3, nil, 0, nil, nil, 0)
 	}
 	postFlush := []uint16{205 + off}
-	require.Equal(t, 0, len(seq.getExtPacketMetas(postFlush))) // not enough time elapsed yet
+	require.Equal(t, 0, len(seq.getExtPacketMetas(postFlush, math.MaxUint64))) // not enough time elapsed yet
 	time.Sleep((ignoreRetransmission + 10) * time.Millisecond)
-	res := seq.getExtPacketMetas(postFlush)
+	res := seq.getExtPacketMetas(postFlush, math.MaxUint64)
 	require.Equal(t, 1, len(res))
 	require.Equal(t, uint16(205+off), res[0].targetSeqNo)
 	require.Equal(t, uint64(205), res[0].sourceSeqNo)
 	require.Equal(t, int8(3), res[0].layer)
 
 	// pre-flush packets remain non-retransmittable
-	require.Equal(t, 0, len(seq.getExtPacketMetas(preFlush)))
+	require.Equal(t, 0, len(seq.getExtPacketMetas(preFlush, math.MaxUint64)))
 }
 
 func Test_sequencer_getNACKSeqNo_exclusion(t *testing.T) {
@@ -237,7 +238,7 @@ func Test_sequencer_getNACKSeqNo_exclusion(t *testing.T) {
 			}
 
 			time.Sleep((ignoreRetransmission + 10) * time.Millisecond)
-			g := n.getExtPacketMetas(tt.args.seqNo)
+			g := n.getExtPacketMetas(tt.args.seqNo, math.MaxUint64)
 			var got []uint16
 			for _, sn := range g {
 				got = append(got, uint16(sn.sourceSeqNo))
@@ -378,7 +379,7 @@ func Test_sequencer_getNACKSeqNo_no_exclusion(t *testing.T) {
 			}
 
 			time.Sleep((ignoreRetransmission + 10) * time.Millisecond)
-			g := n.getExtPacketMetas(tt.args.seqNo)
+			g := n.getExtPacketMetas(tt.args.seqNo, math.MaxUint64)
 			var got []uint16
 			for _, sn := range g {
 				got = append(got, uint16(sn.sourceSeqNo))
@@ -403,4 +404,74 @@ func Test_sequencer_getNACKSeqNo_no_exclusion(t *testing.T) {
 			}
 		})
 	}
+}
+
+// key-frame-range NACK exemption (lk-rtx-fix F2-X)
+func newExemptionSequencer(t *testing.T) *sequencer {
+	seq := newSequencer(500, false, logger.GetLogger())
+	seq.setRTT(10) // dedupe window min(100 ms, 2*10 ms) = 20 ms
+	for i := uint64(1); i <= 20; i++ {
+		seq.push(time.Now().UnixNano(), i, i+100, 123, true, 0, nil, 0, nil, nil, 0)
+	}
+	return seq
+}
+
+// nackOutsideWindow waits out the dedupe window, then NACKs one subscriber sequence number.
+func nackOutsideWindow(seq *sequencer, sn uint16, uncappedFrom uint64) []extPacketMeta {
+	time.Sleep(30 * time.Millisecond)
+	return seq.getExtPacketMetas([]uint16{sn}, uncappedFrom)
+}
+
+func Test_sequencer_keyFrameRangeExemption(t *testing.T) {
+	const sn = uint16(110)
+	const extSN = uint64(110)
+
+	t.Run("S1 exhausted slot below the mark stays skipped", func(t *testing.T) {
+		seq := newExemptionSequencer(t)
+		for i := 1; i <= maxAck; i++ {
+			m := nackOutsideWindow(seq, sn, math.MaxUint64)
+			require.Len(t, m, 1)
+			require.EqualValues(t, i, m[0].nacked)
+		}
+		require.Empty(t, nackOutsideWindow(seq, sn, math.MaxUint64), "4th NACK beyond maxAck without exemption")
+		require.Empty(t, nackOutsideWindow(seq, sn, extSN+1), "mark above the slot: no exemption")
+	})
+
+	t.Run("S2 slot at the mark is served beyond maxAck", func(t *testing.T) {
+		seq := newExemptionSequencer(t)
+		for i := 1; i <= maxAck; i++ {
+			require.Len(t, nackOutsideWindow(seq, sn, math.MaxUint64), 1)
+		}
+		require.Empty(t, nackOutsideWindow(seq, sn, extSN+1), "precondition: exhausted, mark one above the slot")
+		for i := maxAck + 1; i <= maxAck+2; i++ {
+			m := nackOutsideWindow(seq, sn, extSN)
+			require.Len(t, m, 1, "NACK %d at the mark", i)
+			require.EqualValues(t, i, m[0].nacked)
+			require.Equal(t, extSN, m[0].extSequenceNumber)
+		}
+		m := nackOutsideWindow(seq, sn+1, extSN)
+		require.Len(t, m, 1, "slots above the mark are in range too")
+	})
+
+	t.Run("S3 dedupe window still applies inside the range", func(t *testing.T) {
+		seq := newExemptionSequencer(t)
+		require.Len(t, nackOutsideWindow(seq, sn, extSN), 1)
+		require.Empty(t, seq.getExtPacketMetas([]uint16{sn}, extSN), "repeat inside the dedupe window")
+		for i := 2; i <= maxAck+1; i++ {
+			require.Len(t, nackOutsideWindow(seq, sn, extSN), 1)
+		}
+		require.Empty(t, seq.getExtPacketMetas([]uint16{sn}, extSN), "repeat inside the dedupe window, beyond maxAck")
+	})
+
+	t.Run("S4 the exemption is capped", func(t *testing.T) {
+		seq := newExemptionSequencer(t)
+		for i := 1; i <= maxAckKeyFrameRange; i++ {
+			m := nackOutsideWindow(seq, sn, extSN)
+			require.Len(t, m, 1, "NACK %d", i)
+			require.EqualValues(t, i, m[0].nacked)
+		}
+		for i := 0; i < 3; i++ {
+			require.Empty(t, nackOutsideWindow(seq, sn, extSN), "beyond maxAckKeyFrameRange")
+		}
+	})
 }

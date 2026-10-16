@@ -28,6 +28,9 @@ const (
 	defaultRtt           = 70
 	ignoreRetransmission = 100 // Ignore packet retransmission after ignoreRetransmission milliseconds
 	maxAck               = 3
+	// NACKs for packets at or after the key frame answering a temporal down-step (while the RTX curb
+	// is active) are served beyond maxAck up to this cap: Chrome retries up to 10 times
+	maxAckKeyFrameRange = 12
 )
 
 type packetMeta struct {
@@ -333,7 +336,10 @@ func (s *sequencer) pushPadding(extStartSNInclusive uint64, extEndSNInclusive ui
 	s.updateSNOffset()
 }
 
-func (s *sequencer) getExtPacketMetas(seqNo []uint16) []extPacketMeta {
+// getExtPacketMetas returns the metadata of the NACKed packets to retransmit. Packets with a
+// subscriber ext sequence number >= uncappedFromExtSN get maxAckKeyFrameRange retransmissions
+// instead of maxAck (math.MaxUint64 = no exemption).
+func (s *sequencer) getExtPacketMetas(seqNo []uint16, uncappedFromExtSN uint64) []extPacketMeta {
 	s.Lock()
 	defer s.Unlock()
 
@@ -382,24 +388,34 @@ func (s *sequencer) getExtPacketMetas(seqNo []uint16) []extPacketMeta {
 			continue
 		}
 
-		if meta.nacked < maxAck && refTime-meta.lastNack > uint32(math.Min(float64(ignoreRetransmission), float64(2*s.rtt))) {
-			meta.nacked++
-			meta.lastNack = refTime
-
-			extTS := uint64(meta.timestamp) + (s.extHighestTS & 0xFFFF_FFFF_0000_0000)
-			if meta.timestamp > highestTS {
-				extTS -= (1 << 32)
-			}
-			epm := extPacketMeta{
-				packetMeta:        *meta,
-				extSequenceNumber: extSN,
-				extTimestamp:      extTS,
-			}
-			epm.codecBytesSlice = append([]byte{}, meta.codecBytesSlice...)
-			epm.ddBytesSlice = append([]byte{}, meta.ddBytesSlice...)
-			epm.actBytes = append([]byte{}, meta.actBytes...)
-			extPacketMetas = append(extPacketMetas, epm)
+		if refTime-meta.lastNack <= uint32(math.Min(float64(ignoreRetransmission), float64(2*s.rtt))) {
+			// repeat inside the dedupe window
+			continue
 		}
+		limit := uint8(maxAck)
+		if extSN >= uncappedFromExtSN {
+			// the key frame answering a down-step and what follows it stay repairable
+			limit = maxAckKeyFrameRange
+		}
+		if meta.nacked >= limit {
+			continue
+		}
+		meta.nacked++
+		meta.lastNack = refTime
+
+		extTS := uint64(meta.timestamp) + (s.extHighestTS & 0xFFFF_FFFF_0000_0000)
+		if meta.timestamp > highestTS {
+			extTS -= (1 << 32)
+		}
+		epm := extPacketMeta{
+			packetMeta:        *meta,
+			extSequenceNumber: extSN,
+			extTimestamp:      extTS,
+		}
+		epm.codecBytesSlice = append([]byte{}, meta.codecBytesSlice...)
+		epm.ddBytesSlice = append([]byte{}, meta.ddBytesSlice...)
+		epm.actBytes = append([]byte{}, meta.actBytes...)
+		extPacketMetas = append(extPacketMetas, epm)
 	}
 
 	return extPacketMetas

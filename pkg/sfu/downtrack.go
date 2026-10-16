@@ -2543,7 +2543,7 @@ func (d *DownTrack) retransmitPackets(nacks []uint16) {
 	nackMisses := uint32(0)
 	numRepeatedNACKs := uint32(0)
 	numCurbed := uint32(0)
-	for _, epm := range d.sequencer.getExtPacketMetas(filtered) {
+	for _, epm := range d.sequencer.getExtPacketMetas(filtered, math.MaxUint64) {
 		if disallowedLayers[epm.layer] {
 			continue
 		}
