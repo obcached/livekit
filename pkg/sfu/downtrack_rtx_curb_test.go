@@ -622,6 +622,35 @@ func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 		require.Zero(t, r.dt.RTXUncappedForTest(), "the move line reports and resets the uncapped count")
 	})
 
+	t.Run("D1w the exemption ends with the key frame repair window", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.bucket(true)
+		r.preStep()
+		r.stepDown(s0t1)
+		r.writeForwarded(0, true) // K1
+		r.writeForwarded(0, false)
+		sns := r.subSNs(6)
+		kf := sns[4]
+		require.EqualValues(t, kf-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K1 moved the boundary")
+
+		rtx, _ := r.nackTimes(kf, 3)
+		require.Equal(t, []int{1, 1, 1}, rtx, "precondition: K1 at maxAck")
+		r.dt.AgeRTXCurbKeyFrameMarkForTest(RTXCurbKeyFrameRepairWindowForTest - 500*time.Millisecond)
+		x, _ := r.nack(kf)
+		require.Equal(t, 1, x, "inside the window K1 is served beyond maxAck")
+
+		rtx, _ = r.nackTimes(sns[5], 3)
+		require.Equal(t, []int{1, 1, 1}, rtx, "precondition: post-K1 packet at maxAck")
+		r.dt.AgeRTXCurbKeyFrameMarkForTest(RTXCurbKeyFrameRepairWindowForTest + time.Millisecond)
+		x, c := r.nack(sns[5])
+		require.Zero(t, x, "after the window the key frame range is back to maxAck")
+		require.Zero(t, c, "capped, not curbed: the boundary is unchanged")
+		x, _ = r.nack(kf)
+		require.Zero(t, x, "K1 too")
+		require.NotZero(t, r.dt.RTXCurbBoundaryForTest(), "the curb stays active")
+		require.EqualValues(t, 1, r.dt.RTXUncappedForTest(), "only the in-window retransmission is uncapped")
+	})
+
 	t.Run("D2 no key frame mark: no exemption", func(t *testing.T) {
 		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
 		r.preStep()

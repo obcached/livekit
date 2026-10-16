@@ -68,6 +68,11 @@ const (
 	// upper bound on NACKed sequence numbers buffered between retransmit worker runs
 	maxPendingNACKs = 5000
 
+	// how long after a key frame mark the RTX curb keeps the key frame range repairable beyond
+	// maxAck: about the receive bucket horizon (1.8 s at 166 pps), past which a repair attempt
+	// is a bucket miss anyway; a key frame completes or fails within +1.0..+1.6 s
+	rtxCurbKeyFrameRepairWindow = 2 * time.Second
+
 	waitBeforeSendPaddingOnMute = 100 * time.Millisecond
 	maxPaddingOnMuteDuration    = 5 * time.Second
 	paddingOnMuteInterval       = 100 * time.Millisecond
@@ -333,6 +338,7 @@ type DownTrack struct {
 	// subscriber ext seq of the last key frame forwarded while the curb was active (0 = none);
 	// a later step never moves the boundary past it
 	rtxCurbKeyFrameSN atomic.Uint64
+	rtxCurbKeyFrameAt atomic.Int64 // mono nanos the mark was set, stored before it
 	// NACKed packets at or after the key frame mark read from the bucket for a retransmission beyond
 	// maxAck. Like rtxCurbed, each curb log line ("moved", "released") reports and resets it: the
 	// value belongs to the segment that line closes, a run's total is the sum over its lines.
@@ -1215,6 +1221,7 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) int32 {
 			// repairable: move the boundary to just below it instead of releasing the curb
 			if kfSN := tp.rtp.extSequenceNumber; kfSN > 1 && d.rtxCurbBoundary.Load() != 0 {
 				// the mark goes first: a commit that re-reads it after its store cannot arm above the key frame
+				d.rtxCurbKeyFrameAt.Store(mono.UnixNano())
 				d.rtxCurbKeyFrameSN.Store(kfSN)
 				for {
 					b := d.rtxCurbBoundary.Load()
@@ -2547,11 +2554,14 @@ func (d *DownTrack) retransmitPackets(nacks []uint16) {
 	nackMisses := uint32(0)
 	numRepeatedNACKs := uint32(0)
 	numCurbed := uint32(0)
-	// while the curb is active, the key frame it moved to and what follows stay repairable beyond maxAck
+	// while the curb is active, the key frame it moved to and what follows stay repairable beyond maxAck,
+	// for the repair window only: not for the rest of a deficient episode
 	uncappedFrom := uint64(math.MaxUint64)
 	if curbBoundary != 0 {
 		if kf := d.rtxCurbKeyFrameSN.Load(); kf != 0 {
-			uncappedFrom = kf
+			if time.Duration(mono.UnixNano()-d.rtxCurbKeyFrameAt.Load()) < rtxCurbKeyFrameRepairWindow {
+				uncappedFrom = kf
+			}
 		}
 	}
 	for _, epm := range d.sequencer.getExtPacketMetas(filtered, uncappedFrom) {
