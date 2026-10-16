@@ -886,6 +886,7 @@ func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 		r.stepDown(s0t1)
 		head := r.dt.RTXCurbBoundaryForTest()
 		r.dt.SetRTXCurbBoundaryForTest(head + 1) // the commit read K1 as its head
+		r.dt.SetRTXCurbStepHeadForTest(head + 1)
 
 		r.writeForwarded(0, true) // K1
 		sns := r.subSNs(5)
@@ -894,6 +895,47 @@ func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 
 		rtx, _ := r.nackTimes(k1, 4)
 		require.Equal(t, []int{1, 1, 1, 1}, rtx, "boundary == K1: K1 opens the window")
+		require.EqualValues(t, 1, r.dt.RTXUncappedForTest())
+	})
+
+	t.Run("D9c a late key packet forwarded before a second step does not take that step's window", func(t *testing.T) {
+		// reviewer r2 R1: the second step keeps the boundary at K1-1, below the late packet
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.bucket(true)
+		r.preStep()
+		r.stepDown(s0t1)
+		r.dt.ForceForwardLayerForTest(s0t1)
+		r.writeForwarded(0, true) // K1
+		sns := r.subSNs(5)
+		k1 := sns[4]
+		require.EqualValues(t, k1-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K1 moved the boundary")
+
+		// key frame F between K1 and step 2: its first (key) packet is late on the uplink
+		lateSN, lateTS, latePID, lateTL0 := r.pubSN, r.ts, r.pid, r.tl0
+		r.pubSN++
+		r.ts, r.pid, r.tl0 = lateTS, latePID, lateTL0
+		r.writeForwarded(0, false)
+		r.subSNs(6)
+		r.dt.AgeRTXCurbKeyFrameMarkForTest(RTXCurbKeyFrameRepairWindowForTest + time.Millisecond)
+
+		r.stepDown(s0t0)
+		require.EqualValues(t, k1-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: step 2 stays at K1")
+
+		curSN, curTS, curPID, curTL0 := r.pubSN, r.ts, r.pid, r.tl0
+		r.pubSN, r.ts, r.pid, r.tl0 = lateSN, lateTS, latePID, lateTL0
+		_, fwd := r.write(0, 0, true) // F's first packet, late and flagged key
+		r.pubSN, r.ts, r.pid, r.tl0 = curSN, curTS, curPID, curTL0
+		require.True(t, fwd, "precondition: the late key packet is forwarded")
+		r.subSNs(7)
+
+		r.writeForwarded(0, true) // K2, answers step 2
+		sns = r.subSNs(8)
+		k2 := sns[7]
+		require.EqualValues(t, k2-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K2 moved the boundary")
+
+		rtx, curbed := r.nackTimes(k2, 4)
+		require.Equal(t, []int{1, 1, 1, 1}, rtx, "K2 still opens step 2's repair window")
+		require.Equal(t, []int{0, 0, 0, 0}, curbed)
 		require.EqualValues(t, 1, r.dt.RTXUncappedForTest())
 	})
 

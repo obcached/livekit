@@ -118,6 +118,9 @@ func (d *DownTrack) AgeRTXCurbKeyFrameMarkForTest(age time.Duration) {
 // SetRTXCurbBoundaryForTest stands in for a commit that raced the key frame branch.
 func (d *DownTrack) SetRTXCurbBoundaryForTest(b uint64) { d.rtxCurbBoundary.Store(b) }
 
+// SetRTXCurbStepHeadForTest stands in for a step whose commit read the key frame as its head.
+func (d *DownTrack) SetRTXCurbStepHeadForTest(h uint64) { d.rtxCurbStepHead.Store(h) }
+
 // SetRTXCurbOnTemporalDownStepForTest sets the config gate; the shared harness builds DownTrackParams itself.
 func (d *DownTrack) SetRTXCurbOnTemporalDownStepForTest(on bool) {
 	d.params.RTXCurbOnTemporalDownStep = on
