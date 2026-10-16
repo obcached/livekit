@@ -1248,7 +1248,8 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) int32 {
 						break
 					}
 					if d.rtxCurbBoundary.CompareAndSwap(b, kfSN-1) {
-						d.params.Logger.Infow("RTX curb moved to key frame", "curbed", d.rtxCurbed.Swap(0), "uncapped", d.rtxUncapped.Swap(0), "rtpsn", kfSN)
+						uncapped := d.rtxUncapped.Swap(0) // also restarts the repair budget
+						d.params.Logger.Infow("RTX curb moved to key frame", "curbed", d.rtxCurbed.Swap(0), "uncapped", uncapped, "rtpsn", kfSN)
 						break
 					}
 				}
@@ -1842,7 +1843,8 @@ func (d *DownTrack) ProvisionalAllocateCommit() VideoAllocation {
 		// episode does not bound it, and a curb that episode left armed (no NACK since it ended)
 		// must not move to this episode's key frame
 		if d.rtxCurbBoundary.Swap(0) != 0 {
-			d.params.Logger.Infow("RTX curb released", "curbed", d.rtxCurbed.Swap(0), "uncapped", d.rtxUncapped.Swap(0), "reason", "not-deficient")
+			uncapped := d.rtxUncapped.Swap(0) // also restarts the repair budget
+			d.params.Logger.Infow("RTX curb released", "curbed", d.rtxCurbed.Swap(0), "uncapped", uncapped, "reason", "not-deficient")
 		}
 		d.rtxCurbKeyFrameSN.Store(0)
 	}
@@ -2567,7 +2569,8 @@ func (d *DownTrack) retransmitPackets(nacks []uint16) {
 	if curbBoundary != 0 && !d.forwarder.IsDeficient() {
 		if d.rtxCurbBoundary.CompareAndSwap(curbBoundary, 0) {
 			d.rtxCurbKeyFrameSN.Store(0)
-			d.params.Logger.Infow("RTX curb released", "curbed", d.rtxCurbed.Swap(0), "uncapped", d.rtxUncapped.Swap(0), "reason", "not-deficient")
+			uncapped := d.rtxUncapped.Swap(0) // also restarts the repair budget
+			d.params.Logger.Infow("RTX curb released", "curbed", d.rtxCurbed.Swap(0), "uncapped", uncapped, "reason", "not-deficient")
 		}
 		curbBoundary = 0
 	}
@@ -2598,8 +2601,8 @@ func (d *DownTrack) retransmitPackets(nacks []uint16) {
 			continue
 		}
 
-		// the window's budget beyond maxAck is spent (rtxUncapped restarts with the move line of the key
-		// frame that opens a window): the rest of the key frame waits for the viewer's PLI
+		// the window's budget beyond maxAck is spent (rtxUncapped restarts when the key frame that opens a
+		// window moves the boundary): the rest of the key frame waits for the viewer's PLI
 		if epm.nacked > maxAck && d.rtxUncapped.Load() >= rtxCurbKeyFrameRepairBudget {
 			continue
 		}
