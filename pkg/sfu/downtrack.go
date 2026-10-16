@@ -2530,7 +2530,8 @@ func (d *DownTrack) retransmitPackets(nacks []uint16) {
 	}
 
 	d.totalRepeatedNACKs.Add(numRepeatedNACKs)
-	if numCurbed != 0 {
+	// a release during the loop already logged its episode's count, do not carry this batch into the next one
+	if numCurbed != 0 && d.rtxCurbBoundary.Load() == curbBoundary {
 		d.rtxCurbed.Add(numCurbed)
 	}
 

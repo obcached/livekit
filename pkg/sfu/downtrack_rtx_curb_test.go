@@ -15,6 +15,7 @@
 package sfu_test
 
 import (
+	"io"
 	"testing"
 	"time"
 
@@ -282,6 +283,29 @@ func TestDownTrackRTXCurbOnTemporalDownStep(t *testing.T) {
 		rtx, curbed = r.nack(sns[5])
 		require.Zero(t, rtx)
 		require.Equal(t, 1, curbed)
+	})
+
+	t.Run("a release during a NACK batch keeps the batch out of the next episode", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, layer: s0t2})
+		r.preStep()
+		r.stepDown(s0t1)
+		r.writeForwarded(0, false)
+		sns := r.subSNs(5)
+		require.NotZero(t, r.dt.RTXCurbBoundaryForTest(), "precondition: curb active")
+		require.Zero(t, r.dt.RTXCurbedForTest(), "precondition: nothing curbed yet")
+
+		// the post-step packet's read stands in for the loop: a key frame releases the
+		// curb (and logs its count) while the batch is still running
+		r.dh.receiver.ReadRTPCalls(func([]byte, uint8, uint64) (int, error) {
+			r.writeForwarded(0, true)
+			return 0, io.EOF
+		})
+		time.Sleep(stepRigOutsideWindow)
+		r.dt.RetransmitPacketsForTest([]uint16{sns[1], sns[4]})
+
+		require.Equal(t, 1, r.dh.receiver.ReadRTPCallCount(), "precondition: the batch reached the post-step read")
+		require.Zero(t, r.dt.RTXCurbBoundaryForTest(), "precondition: released mid-batch")
+		require.Zero(t, r.dt.RTXCurbedForTest(), "the released episode's batch must not count toward the next one")
 	})
 
 	t.Run("a spatial step never sets the boundary", func(t *testing.T) {
