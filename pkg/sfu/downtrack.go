@@ -1231,7 +1231,9 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) int32 {
 			// repairable: move the boundary to just below it instead of releasing the curb
 			if kfSN := tp.rtp.extSequenceNumber; kfSN > 1 && d.rtxCurbBoundary.Load() != 0 {
 				// the mark goes first: a commit that re-reads it after its store cannot arm above the key frame
-				if d.rtxCurbKeyFramePending.CompareAndSwap(true, false) {
+				// an older (out of order) key packet below the boundary does not answer the step: it must
+				// not take the step's window
+				if d.rtxCurbBoundary.Load() <= kfSN && d.rtxCurbKeyFramePending.CompareAndSwap(true, false) {
 					d.rtxCurbKeyFrameAt.Store(mono.UnixNano())
 					d.rtxCurbKeyFrameTS.Store(uint32(tp.rtp.extTimestamp))
 				}

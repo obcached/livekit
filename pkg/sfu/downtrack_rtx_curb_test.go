@@ -844,6 +844,59 @@ func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 		require.Equal(t, []int{0, 0, 0}, curbed)
 	})
 
+	t.Run("D9 a late pre-step key packet does not take the step's repair window", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.bucket(true)
+		r.preStep()
+
+		// frame F: its first (key) packet is late on the uplink, its second packet arrives in order
+		lateSN, lateTS, latePID, lateTL0 := r.pubSN, r.ts, r.pid, r.tl0
+		r.pubSN++
+		r.ts, r.pid, r.tl0 = lateTS, latePID, lateTL0
+		r.writeForwarded(0, false)
+		r.subSNs(5)
+
+		r.stepDown(s0t1)
+		boundary := r.dt.RTXCurbBoundaryForTest()
+		require.NotZero(t, boundary, "precondition: curb armed")
+
+		curSN, curTS, curPID, curTL0 := r.pubSN, r.ts, r.pid, r.tl0
+		r.pubSN, r.ts, r.pid, r.tl0 = lateSN, lateTS, latePID, lateTL0
+		_, fwd := r.write(0, 0, true) // F's first packet, late and flagged key
+		r.pubSN, r.ts, r.pid, r.tl0 = curSN, curTS, curPID, curTL0
+		require.True(t, fwd, "precondition: the late key packet is forwarded")
+		r.subSNs(6)
+		require.Equal(t, boundary, r.dt.RTXCurbBoundaryForTest(), "precondition: the late key packet does not move the boundary")
+
+		r.writeForwarded(0, true) // K1, answers the step
+		sns := r.subSNs(7)
+		k1 := sns[6]
+		require.EqualValues(t, k1-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K1 moved the boundary")
+
+		rtx, curbed := r.nackTimes(k1, 4)
+		require.Equal(t, []int{1, 1, 1, 1}, rtx, "K1 still opens the step's repair window")
+		require.Equal(t, []int{0, 0, 0, 0}, curbed)
+		require.EqualValues(t, 1, r.dt.RTXUncappedForTest())
+	})
+
+	t.Run("D9b a key frame the step counted as its head still opens the window", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.bucket(true)
+		r.preStep()
+		r.stepDown(s0t1)
+		head := r.dt.RTXCurbBoundaryForTest()
+		r.dt.SetRTXCurbBoundaryForTest(head + 1) // the commit read K1 as its head
+
+		r.writeForwarded(0, true) // K1
+		sns := r.subSNs(5)
+		k1 := sns[4]
+		require.EqualValues(t, k1-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K1 moved the boundary")
+
+		rtx, _ := r.nackTimes(k1, 4)
+		require.Equal(t, []int{1, 1, 1, 1}, rtx, "boundary == K1: K1 opens the window")
+		require.EqualValues(t, 1, r.dt.RTXUncappedForTest())
+	})
+
 	t.Run("D4b a curb left armed by an earlier episode does not exempt the next one", func(t *testing.T) {
 		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
 		r.bucket(true)
