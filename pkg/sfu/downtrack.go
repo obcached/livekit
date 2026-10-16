@@ -338,10 +338,14 @@ type DownTrack struct {
 	// subscriber ext seq of the last key frame forwarded while the curb was active (0 = none);
 	// a later step never moves the boundary past it
 	rtxCurbKeyFrameSN atomic.Uint64
-	rtxCurbKeyFrameAt atomic.Int64 // mono nanos the mark was set, stored before it
-	// subscriber RTP timestamp of the marked key frame, stored before the mark: with the mark it
-	// bounds the exemption to the key frame's own packets
+	// mono nanos the repair window opened, stored before the mark
+	rtxCurbKeyFrameAt atomic.Int64
+	// subscriber RTP timestamp of the key frame that opened the repair window: with the mark it
+	// bounds the exemption to that key frame's own packets
 	rtxCurbKeyFrameTS atomic.Uint32
+	// set by a temporal step that arms the curb: only the next key frame forwarded under the curb
+	// (the one answering the step) opens a repair window, a later one (viewer PLI) does not
+	rtxCurbKeyFramePending atomic.Bool
 	// NACKed packets at or after the key frame mark read from the bucket for a retransmission beyond
 	// maxAck. Like rtxCurbed, each curb log line ("moved", "released") reports and resets it: the
 	// value belongs to the segment that line closes, a run's total is the sum over its lines.
@@ -1224,8 +1228,12 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) int32 {
 			// repairable: move the boundary to just below it instead of releasing the curb
 			if kfSN := tp.rtp.extSequenceNumber; kfSN > 1 && d.rtxCurbBoundary.Load() != 0 {
 				// the mark goes first: a commit that re-reads it after its store cannot arm above the key frame
-				d.rtxCurbKeyFrameAt.Store(mono.UnixNano())
-				d.rtxCurbKeyFrameTS.Store(uint32(tp.rtp.extTimestamp))
+				if d.rtxCurbKeyFramePending.CompareAndSwap(true, false) {
+					d.rtxCurbKeyFrameAt.Store(mono.UnixNano())
+					d.rtxCurbKeyFrameTS.Store(uint32(tp.rtp.extTimestamp))
+				}
+				// a later key frame still moves the mark (and the boundary), which ends the exemption of
+				// the one it supersedes without granting its own (its timestamp is not the window's)
 				d.rtxCurbKeyFrameSN.Store(kfSN)
 				for {
 					b := d.rtxCurbBoundary.Load()
@@ -1835,7 +1843,8 @@ func (d *DownTrack) ProvisionalAllocateCommit() VideoAllocation {
 	}
 	if allocation.TemporalDownStep && d.params.RTXCurbOnTemporalDownStep {
 		// packets forwarded before the step carry the layers the channel could not take,
-		// do not retransmit them
+		// do not retransmit them; the key frame answering this step gets a repair window
+		d.rtxCurbKeyFramePending.Store(true)
 		d.rtxCurbBoundary.Store(d.rtpStats.ExtHighestSequenceNumber())
 		// but not the key frame answering an earlier step of this episode; the mark is read after
 		// the store so a key frame forwarded concurrently cannot be left above the boundary

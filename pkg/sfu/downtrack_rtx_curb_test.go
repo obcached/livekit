@@ -757,6 +757,64 @@ func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 		require.Equal(t, 1, c)
 	})
 
+	t.Run("D6 a later key frame of the same step does not re-open the repair window", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.bucket(true)
+		r.preStep()
+		r.stepDown(s0t1)
+		r.writeForwarded(0, true) // K1, answers the step
+		sns := r.subSNs(5)
+		require.EqualValues(t, sns[4]-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K1 moved the boundary")
+		r.dt.AgeRTXCurbKeyFrameMarkForTest(RTXCurbKeyFrameRepairWindowForTest + time.Millisecond)
+
+		r.writeForwarded(0, true) // K2, a viewer PLI's key frame in the same deficient episode
+		sns = r.subSNs(6)
+		k2 := sns[5]
+		require.EqualValues(t, k2-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K2 still moves the boundary")
+
+		rtx, curbed := r.nackTimes(k2, 4)
+		require.Equal(t, []int{1, 1, 1, 0}, rtx, "K2 keeps maxAck: the window stays closed")
+		require.Equal(t, []int{0, 0, 0, 0}, curbed)
+		require.Zero(t, r.dt.RTXUncappedForTest())
+	})
+
+	t.Run("D6b a later key frame inside the window ends K1's exemption without its own", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.bucket(true)
+		r.preStep()
+		r.stepDown(s0t1)
+		r.writeForwarded(0, true) // K1
+		r.writeForwarded(0, true) // K2, no new step
+		sns := r.subSNs(6)
+		k2 := sns[5]
+		require.EqualValues(t, k2-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K2 moved the boundary")
+
+		rtx, _ := r.nackTimes(k2, 4)
+		require.Equal(t, []int{1, 1, 1, 0}, rtx, "K2 does not answer a step: maxAck")
+		require.Zero(t, r.dt.RTXUncappedForTest())
+	})
+
+	t.Run("D7 the key frame answering a second step opens its own window", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.bucket(true)
+		r.preStep()
+		r.stepDown(s0t1)
+		r.dt.ForceForwardLayerForTest(s0t1)
+		r.writeForwarded(0, true) // K1
+		r.subSNs(5)
+		r.dt.AgeRTXCurbKeyFrameMarkForTest(RTXCurbKeyFrameRepairWindowForTest + time.Millisecond)
+
+		r.stepDown(s0t0)
+		r.writeForwarded(0, true) // K2, answers the second step
+		sns := r.subSNs(6)
+		k2 := sns[5]
+		require.EqualValues(t, k2-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K2 moved the boundary")
+
+		rtx, _ := r.nackTimes(k2, 4)
+		require.Equal(t, []int{1, 1, 1, 1}, rtx, "K2 is repaired beyond maxAck")
+		require.EqualValues(t, 1, r.dt.RTXUncappedForTest())
+	})
+
 	t.Run("D4b a curb left armed by an earlier episode does not exempt the next one", func(t *testing.T) {
 		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
 		r.bucket(true)
