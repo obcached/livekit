@@ -102,6 +102,8 @@ func (d *DownTrack) RTXCurbBoundaryForTest() uint64 { return d.rtxCurbBoundary.L
 
 func (d *DownTrack) RTXCurbedForTest() uint32 { return d.rtxCurbed.Load() }
 
+func (d *DownTrack) RTXUncappedForTest() uint32 { return d.rtxUncapped.Load() }
+
 // SetRTXCurbBoundaryForTest stands in for a commit that raced the key frame branch.
 func (d *DownTrack) SetRTXCurbBoundaryForTest(b uint64) { d.rtxCurbBoundary.Store(b) }
 

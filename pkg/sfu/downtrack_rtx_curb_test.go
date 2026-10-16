@@ -563,3 +563,143 @@ func TestDownTrackRTXCurbOnTemporalDownStep(t *testing.T) {
 		require.Zero(t, r.dt.RTXCurbBoundaryForTest())
 	})
 }
+
+// nackTimes NACKs one subscriber sequence number n times and returns the per-NACK rtx and curbed counts.
+func (r *stepRig) nackTimes(sn uint16, n int) (rtx []int, curbed []int) {
+	for i := 0; i < n; i++ {
+		x, c := r.nack(sn)
+		rtx = append(rtx, x)
+		curbed = append(curbed, c)
+	}
+	return rtx, curbed
+}
+
+func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
+	t.Run("D1 the key frame is retransmitted beyond maxAck under the curb", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		sns := r.preStep()
+		r.stepDown(s0t1)
+		r.writeForwarded(0, true) // K1
+		r.writeForwarded(0, false)
+		r.writeForwarded(0, false)
+		sns = r.subSNs(7)
+		kf := sns[4]
+		require.EqualValues(t, kf-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K1 moved the boundary")
+		require.Zero(t, r.dt.RTXUncappedForTest(), "precondition: nothing served beyond maxAck yet")
+
+		rtx, curbed := r.nackTimes(kf, 4)
+		require.Equal(t, []int{1, 1, 1, 1}, rtx, "K1 is repaired beyond maxAck")
+		require.Equal(t, []int{0, 0, 0, 0}, curbed)
+		require.EqualValues(t, 1, r.dt.RTXUncappedForTest(), "one retransmission beyond maxAck")
+
+		rtx, _ = r.nackTimes(sns[5], 4)
+		require.Equal(t, []int{1, 1, 1, 1}, rtx, "packets after K1 are in range too")
+		require.EqualValues(t, 2, r.dt.RTXUncappedForTest())
+
+		// a pre-step SN consumes its budget before the curb check: 3 refusals are counted
+		rtx, curbed = r.nackTimes(sns[1], 4)
+		require.Equal(t, []int{0, 0, 0, 0}, rtx)
+		require.Equal(t, []int{1, 1, 1, 0}, curbed)
+
+		// the next key frame move logs and resets the counter
+		r.writeForwarded(0, true)
+		r.subSNs(8)
+		require.Zero(t, r.dt.RTXUncappedForTest(), "the move line reports and resets the uncapped count")
+	})
+
+	t.Run("D2 no key frame mark: no exemption", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.preStep()
+		r.stepDown(s0t1)
+		r.writeForwarded(0, false)
+		sns := r.subSNs(5)
+		require.NotZero(t, r.dt.RTXCurbBoundaryForTest(), "precondition: curb active")
+
+		rtx, _ := r.nackTimes(sns[4], 4)
+		require.Equal(t, []int{1, 1, 1, 0}, rtx, "post-step packet without a key frame mark keeps maxAck")
+		require.Zero(t, r.dt.RTXUncappedForTest())
+	})
+
+	t.Run("D3 a release clears the exemption", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.preStep()
+		r.stepDown(s0t1)
+		r.writeForwarded(0, true)
+		sns := r.subSNs(5)
+		kf := sns[4]
+		require.EqualValues(t, kf-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K1 moved the boundary")
+
+		require.False(t, r.commit(1_000_000, s0t2).IsDeficient)
+		r.nack(sns[0])
+		require.Zero(t, r.dt.RTXCurbBoundaryForTest(), "precondition: not-deficient release")
+
+		rtx, _ := r.nackTimes(kf, 4)
+		require.Equal(t, []int{1, 1, 1, 0}, rtx, "after the release K1 is back to maxAck")
+	})
+
+	t.Run("D3b a lingering mark without an active curb does not exempt", func(t *testing.T) {
+		// a release racing the key frame branch can leave the mark set with no boundary
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.preStep()
+		r.stepDown(s0t1)
+		r.writeForwarded(0, true)
+		sns := r.subSNs(5)
+		kf := sns[4]
+		require.EqualValues(t, kf-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K1 moved the boundary")
+		r.dt.SetRTXCurbBoundaryForTest(0)
+
+		rtx, _ := r.nackTimes(kf, 4)
+		require.Equal(t, []int{1, 1, 1, 0}, rtx, "no curb, no exemption")
+		require.Zero(t, r.dt.RTXUncappedForTest())
+	})
+
+	t.Run("D4 double step keeps the exemption at K1", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.preStep()
+		r.stepDown(s0t1)
+		r.dt.ForceForwardLayerForTest(s0t1)
+		r.writeForwarded(1, false)
+		r.writeForwarded(0, true) // K1
+		r.writeForwarded(1, false)
+		r.writeForwarded(0, false)
+		sns := r.subSNs(8)
+		kf := sns[5]
+		require.EqualValues(t, kf-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K1 moved the boundary")
+
+		r.stepDown(s0t0)
+		require.EqualValues(t, kf-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: second step stays at K1")
+
+		rtx, curbed := r.nackTimes(kf, 4)
+		require.Equal(t, []int{1, 1, 1, 1}, rtx, "K1 stays uncapped after the second step")
+		require.Equal(t, []int{0, 0, 0, 0}, curbed)
+
+		x, c := r.nack(sns[4])
+		require.Zero(t, x, "post-step pre-K1 packet is curbed")
+		require.Equal(t, 1, c)
+	})
+
+	t.Run("D5 B off: no mark, no exemption", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: false, layer: s0t2})
+		r.preStep()
+		r.stepDown(s0t1)
+		require.NotZero(t, r.dt.RTXCurbBoundaryForTest(), "precondition: curb active")
+		r.writeForwarded(0, true)
+		sns := r.subSNs(5)
+		require.Zero(t, r.dt.RTXCurbBoundaryForTest(), "precondition: B off, the key frame releases")
+
+		rtx, _ := r.nackTimes(sns[4], 4)
+		require.Equal(t, []int{1, 1, 1, 0}, rtx)
+		require.Zero(t, r.dt.RTXUncappedForTest())
+	})
+
+	t.Run("D5b A and B off (stock): no exemption", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: false, keyFrame: false, layer: s0t2})
+		r.preStep()
+		r.stepDown(s0t1)
+		r.writeForwarded(0, true)
+		sns := r.subSNs(5)
+
+		rtx, _ := r.nackTimes(sns[4], 4)
+		require.Equal(t, []int{1, 1, 1, 0}, rtx)
+	})
+}

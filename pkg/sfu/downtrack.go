@@ -333,6 +333,8 @@ type DownTrack struct {
 	// subscriber ext seq of the last key frame forwarded while the curb was active (0 = none);
 	// a later step never moves the boundary past it
 	rtxCurbKeyFrameSN atomic.Uint64
+	// NACKed packets at or after the key frame mark retransmitted beyond maxAck since the last curb log line
+	rtxUncapped atomic.Uint32
 
 	activePaddingOnMuteUpTrack atomic.Bool
 
@@ -1220,7 +1222,7 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) int32 {
 						break
 					}
 					if d.rtxCurbBoundary.CompareAndSwap(b, kfSN-1) {
-						d.params.Logger.Infow("RTX curb moved to key frame", "curbed", d.rtxCurbed.Swap(0), "rtpsn", kfSN)
+						d.params.Logger.Infow("RTX curb moved to key frame", "curbed", d.rtxCurbed.Swap(0), "uncapped", d.rtxUncapped.Swap(0), "rtpsn", kfSN)
 						break
 					}
 				}
@@ -2534,7 +2536,7 @@ func (d *DownTrack) retransmitPackets(nacks []uint16) {
 	if curbBoundary != 0 && !d.forwarder.IsDeficient() {
 		if d.rtxCurbBoundary.CompareAndSwap(curbBoundary, 0) {
 			d.rtxCurbKeyFrameSN.Store(0)
-			d.params.Logger.Infow("RTX curb released", "curbed", d.rtxCurbed.Swap(0), "reason", "not-deficient")
+			d.params.Logger.Infow("RTX curb released", "curbed", d.rtxCurbed.Swap(0), "uncapped", d.rtxUncapped.Swap(0), "reason", "not-deficient")
 		}
 		curbBoundary = 0
 	}
@@ -2543,7 +2545,14 @@ func (d *DownTrack) retransmitPackets(nacks []uint16) {
 	nackMisses := uint32(0)
 	numRepeatedNACKs := uint32(0)
 	numCurbed := uint32(0)
-	for _, epm := range d.sequencer.getExtPacketMetas(filtered, math.MaxUint64) {
+	// while the curb is active, the key frame it moved to and what follows stay repairable beyond maxAck
+	uncappedFrom := uint64(math.MaxUint64)
+	if curbBoundary != 0 {
+		if kf := d.rtxCurbKeyFrameSN.Load(); kf != 0 {
+			uncappedFrom = kf
+		}
+	}
+	for _, epm := range d.sequencer.getExtPacketMetas(filtered, uncappedFrom) {
 		if disallowedLayers[epm.layer] {
 			continue
 		}
@@ -2554,6 +2563,9 @@ func (d *DownTrack) retransmitPackets(nacks []uint16) {
 		}
 
 		nackAcks++
+		if epm.nacked > maxAck {
+			d.rtxUncapped.Add(1)
+		}
 
 		pktBuff := *src
 		n, err := receiver.ReadRTP(pktBuff, uint8(epm.layer), epm.sourceSeqNo)
