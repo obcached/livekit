@@ -102,6 +102,9 @@ func (d *DownTrack) RTXCurbBoundaryForTest() uint64 { return d.rtxCurbBoundary.L
 
 func (d *DownTrack) RTXCurbedForTest() uint32 { return d.rtxCurbed.Load() }
 
+// SetRTXCurbBoundaryForTest stands in for a commit that raced the key frame branch.
+func (d *DownTrack) SetRTXCurbBoundaryForTest(b uint64) { d.rtxCurbBoundary.Store(b) }
+
 // SetRTXCurbOnTemporalDownStepForTest sets the config gate; the shared harness builds DownTrackParams itself.
 func (d *DownTrack) SetRTXCurbOnTemporalDownStepForTest(on bool) {
 	d.params.RTXCurbOnTemporalDownStep = on

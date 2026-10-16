@@ -225,7 +225,7 @@ func TestDownTrackRTXCurbOnTemporalDownStep(t *testing.T) {
 	})
 
 	t.Run("a forwarded key frame moves the boundary to just below it", func(t *testing.T) {
-		r := newStepRig(t, stepRigOpts{rtxCurb: true, layer: s0t2})
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
 		sns := r.preStep()
 		r.stepDown(s0t1)
 		require.EqualValues(t, sns[3], uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: boundary at the step head")
@@ -255,7 +255,7 @@ func TestDownTrackRTXCurbOnTemporalDownStep(t *testing.T) {
 	})
 
 	t.Run("double step: the re-armed boundary never passes the key frame", func(t *testing.T) {
-		r := newStepRig(t, stepRigOpts{rtxCurb: true, layer: s0t2})
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
 		r.preStep()
 		r.stepDown(s0t1)
 
@@ -291,7 +291,7 @@ func TestDownTrackRTXCurbOnTemporalDownStep(t *testing.T) {
 	})
 
 	t.Run("double step: a key frame right after the step head is still kept repairable", func(t *testing.T) {
-		r := newStepRig(t, stepRigOpts{rtxCurb: true, layer: s0t2})
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
 		sns := r.preStep()
 		r.stepDown(s0t1)
 		require.EqualValues(t, sns[3], uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: boundary at the step head")
@@ -312,7 +312,7 @@ func TestDownTrackRTXCurbOnTemporalDownStep(t *testing.T) {
 	})
 
 	t.Run("a release clears the key frame mark: the next episode arms at its head", func(t *testing.T) {
-		r := newStepRig(t, stepRigOpts{rtxCurb: true, layer: s0t2})
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
 		r.preStep()
 		r.stepDown(s0t1)
 		r.writeForwarded(0, true)
@@ -377,7 +377,7 @@ func TestDownTrackRTXCurbOnTemporalDownStep(t *testing.T) {
 	})
 
 	t.Run("a key frame move during a NACK batch keeps the batch out of the next segment", func(t *testing.T) {
-		r := newStepRig(t, stepRigOpts{rtxCurb: true, layer: s0t2})
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
 		r.preStep()
 		r.stepDown(s0t1)
 		r.writeForwarded(0, false)
@@ -401,6 +401,151 @@ func TestDownTrackRTXCurbOnTemporalDownStep(t *testing.T) {
 		require.NotZero(t, after, "a key frame moves the curb, it does not release it")
 		require.NotEqual(t, before, after, "precondition: moved mid-batch")
 		require.Zero(t, r.dt.RTXCurbedForTest(), "the previous segment's batch must not count toward the next one")
+	})
+
+	t.Run("B off: a forwarded key frame releases the curb (base behaviour)", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: false, layer: s0t2})
+		sns := r.preStep()
+		r.stepDown(s0t1)
+
+		rtx, curbed := r.nack(sns[1])
+		require.Zero(t, rtx, "precondition: curb active")
+		require.Equal(t, 1, curbed)
+		require.NotZero(t, r.dt.RTXCurbBoundaryForTest(), "precondition: boundary set")
+
+		r.writeForwarded(1, false)
+		r.writeForwarded(0, true)
+		require.Zero(t, r.dt.RTXCurbBoundaryForTest(), "without (B) the key frame releases the curb")
+		require.Zero(t, r.dt.RTXCurbedForTest())
+
+		rtx, curbed = r.nack(sns[1])
+		require.Equal(t, 1, rtx, "pre-step packet is repaired again after the key frame")
+		require.Zero(t, curbed)
+
+		// a later step arms at its own head: no key frame mark was recorded
+		r.dt.ForceForwardLayerForTest(s0t1)
+		r.writeForwarded(1, false)
+		sns = r.subSNs(7)
+		r.stepDown(s0t0)
+		require.EqualValues(t, sns[6], uint16(r.dt.RTXCurbBoundaryForTest()), "B off: the next step arms at the head")
+	})
+
+	t.Run("B off: a release during a NACK batch keeps the batch out of the next episode", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: false, layer: s0t2})
+		r.preStep()
+		r.stepDown(s0t1)
+		r.writeForwarded(0, false)
+		sns := r.subSNs(5)
+		require.NotZero(t, r.dt.RTXCurbBoundaryForTest(), "precondition: curb active")
+		require.Zero(t, r.dt.RTXCurbedForTest(), "precondition: nothing curbed yet")
+
+		r.dh.receiver.ReadRTPCalls(func([]byte, uint8, uint64) (int, error) {
+			r.writeForwarded(0, true)
+			return 0, io.EOF
+		})
+		time.Sleep(stepRigOutsideWindow)
+		r.dt.RetransmitPacketsForTest([]uint16{sns[1], sns[4]})
+
+		require.Equal(t, 1, r.dh.receiver.ReadRTPCallCount(), "precondition: the batch reached the post-step read")
+		require.Zero(t, r.dt.RTXCurbBoundaryForTest(), "precondition: released mid-batch")
+		require.Zero(t, r.dt.RTXCurbedForTest(), "the released episode's batch must not count toward the next one")
+	})
+
+	t.Run("no NACK between episodes: the next episode arms at its own head", func(t *testing.T) {
+		// reviewer r1 N1: the earlier episode's key frame mark must not bound a new episode
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.preStep()
+		r.stepDown(s0t1)
+		r.dt.ForceForwardLayerForTest(s0t1)
+		r.writeForwarded(0, true) // K1, the answer to episode 1
+		sns := r.subSNs(5)
+		require.EqualValues(t, sns[4]-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K1 moved the boundary")
+
+		// episode 1 ends: the allocation is no longer deficient, no NACK arrives (clean link)
+		alloc := r.commit(500_000, s0t2)
+		require.False(t, alloc.IsDeficient)
+		r.dt.ForceForwardLayerForTest(s0t2)
+		r.writeForwarded(1, false)
+		r.writeForwarded(2, false)
+		r.writeForwarded(0, false)
+		sns = r.subSNs(8)
+		require.NotZero(t, r.dt.RTXCurbBoundaryForTest(), "precondition: no NACK, the old boundary lingers")
+
+		// episode 2: a new temporal down-step
+		r.stepDown(s0t1)
+		require.EqualValues(t, sns[7], uint16(r.dt.RTXCurbBoundaryForTest()), "episode 2 arms at its own head")
+		rtx, curbed := r.nack(sns[6])
+		require.Zero(t, rtx, "episode 2's pre-step backlog is curbed")
+		require.Equal(t, 1, curbed)
+	})
+
+	t.Run("a key frame the step already counted as its head still moves the boundary", func(t *testing.T) {
+		// reviewer r1 N3 (ii): the commit read the key frame as its head before the key frame branch ran
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		sns := r.preStep()
+		r.stepDown(s0t1)
+		head := r.dt.RTXCurbBoundaryForTest()
+		require.EqualValues(t, sns[3], uint16(head), "precondition: boundary at the head")
+		r.dt.SetRTXCurbBoundaryForTest(head + 1) // the next forwarded packet, K
+
+		r.writeForwarded(0, true)
+		sns = r.subSNs(5)
+		require.EqualValues(t, head+1, r.dt.RTXCurbBoundaryForTest()+1, "boundary = K - 1")
+		require.EqualValues(t, sns[4]-1, uint16(r.dt.RTXCurbBoundaryForTest()))
+		rtx, curbed := r.nack(sns[4])
+		require.Equal(t, 1, rtx, "K is repairable")
+		require.Zero(t, curbed)
+
+		// a key frame older than the boundary (out of order) never lowers it
+		r.dt.SetRTXCurbBoundaryForTest(head + 3)
+		r.writeForwarded(0, true)
+		require.EqualValues(t, head+3, r.dt.RTXCurbBoundaryForTest(), "an older key frame leaves the boundary")
+	})
+
+	t.Run("a deficient episode not opened by a temporal step: stale mark cleared, no-curb key frame not recorded", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.preStep()
+		r.stepDown(s0t1)
+		r.dt.ForceForwardLayerForTest(s0t1)
+		r.writeForwarded(0, true) // K1 marks episode 1
+		sns := r.subSNs(5)
+		require.EqualValues(t, sns[4]-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K1 moved the boundary")
+
+		// episode 1 ends without a NACK; episode 2 opens with a deficient commit that is not a temporal step
+		require.False(t, r.commit(500_000, s0t2).IsDeficient)
+		r.dt.ForceForwardLayerForTest(s0t0)
+		open := r.commit(150_000, s0t0)
+		require.True(t, open.IsDeficient, "precondition: episode 2 is deficient")
+		require.False(t, open.TemporalDownStep, "precondition: episode 2 does not open with a temporal step")
+		r.nack(sns[0]) // the lazy release only runs when not deficient: the old boundary stays
+		require.NotZero(t, r.dt.RTXCurbBoundaryForTest(), "precondition: boundary lingers")
+
+		// then the temporal step of episode 2
+		r.dt.ForceForwardLayerForTest(s0t1)
+		r.writeForwarded(1, false)
+		r.writeForwarded(0, false)
+		sns = r.subSNs(7)
+		r.stepDown(s0t0)
+		require.EqualValues(t, sns[6], uint16(r.dt.RTXCurbBoundaryForTest()), "episode 2 arms at its own head")
+	})
+
+	t.Run("a key frame forwarded with no curb active is not recorded", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t0})
+		r.writeForwarded(0, true)
+		r.writeForwarded(0, false)
+		r.subSNs(2)
+		open := r.commit(150_000, s0t0)
+		require.True(t, open.IsDeficient, "precondition: deficient episode")
+		require.False(t, open.TemporalDownStep, "precondition: not opened by a temporal step")
+		require.Zero(t, r.dt.RTXCurbBoundaryForTest(), "precondition: no curb")
+
+		r.writeForwarded(0, true) // e.g. a layer switch key frame, no curb to move
+		r.dt.ForceForwardLayerForTest(s0t1)
+		r.writeForwarded(1, false)
+		r.writeForwarded(0, false)
+		sns := r.subSNs(5)
+		r.stepDown(s0t0)
+		require.EqualValues(t, sns[4], uint16(r.dt.RTXCurbBoundaryForTest()), "the step arms at its head")
 	})
 
 	t.Run("a spatial step never sets the boundary", func(t *testing.T) {

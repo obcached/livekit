@@ -1206,13 +1206,27 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) int32 {
 
 	if extPkt.IsKeyFrame {
 		d.isNACKThrottled.Store(false)
-		// the key frame supersedes the curbed backlog but its own packets must stay repairable:
-		// move the boundary to just below it instead of releasing the curb
-		if kfSN := tp.rtp.extSequenceNumber; kfSN > 1 {
-			if b := d.rtxCurbBoundary.Load(); b != 0 && b < kfSN && d.rtxCurbBoundary.CompareAndSwap(b, kfSN-1) {
+		if d.params.KeyFrameOnTemporalDownStep {
+			// the key frame answering the step supersedes the curbed backlog but its own packets must stay
+			// repairable: move the boundary to just below it instead of releasing the curb
+			if kfSN := tp.rtp.extSequenceNumber; kfSN > 1 && d.rtxCurbBoundary.Load() != 0 {
+				// the mark goes first: a commit that re-reads it after its store cannot arm above the key frame
 				d.rtxCurbKeyFrameSN.Store(kfSN)
-				d.params.Logger.Infow("RTX curb moved to key frame", "curbed", d.rtxCurbed.Swap(0), "rtpsn", kfSN)
+				for {
+					b := d.rtxCurbBoundary.Load()
+					// b == kfSN: a commit read this key frame as its head; b > kfSN: an older (out of order)
+					// key frame, which never lowers the boundary
+					if b == 0 || b > kfSN {
+						break
+					}
+					if d.rtxCurbBoundary.CompareAndSwap(b, kfSN-1) {
+						d.params.Logger.Infow("RTX curb moved to key frame", "curbed", d.rtxCurbed.Swap(0), "rtpsn", kfSN)
+						break
+					}
+				}
 			}
+		} else if d.rtxCurbBoundary.Swap(0) != 0 {
+			d.params.Logger.Infow("RTX curb released", "curbed", d.rtxCurbed.Swap(0), "reason", "keyframe")
 		}
 		d.rtpStats.UpdateKeyFrame(1)
 		d.params.Logger.Debugw(
@@ -1793,16 +1807,27 @@ func (d *DownTrack) ProvisionalAllocateGetBestWeightedTransition() VideoTransiti
 }
 
 func (d *DownTrack) ProvisionalAllocateCommit() VideoAllocation {
+	wasDeficient := d.forwarder.IsDeficient()
 	allocation := d.forwarder.ProvisionalAllocateCommit()
+	if !wasDeficient {
+		// a new deficient episode starts here (whatever its first step): a key frame of an earlier
+		// episode does not bound it
+		d.rtxCurbKeyFrameSN.Store(0)
+	}
 	if allocation.TemporalDownStep && d.params.RTXCurbOnTemporalDownStep {
 		// packets forwarded before the step carry the layers the channel could not take,
 		// do not retransmit them
-		boundary := d.rtpStats.ExtHighestSequenceNumber()
-		if kf := d.rtxCurbKeyFrameSN.Load(); kf != 0 && kf-1 < boundary {
-			// do not curb the repair of the key frame answering an earlier step of this episode
-			boundary = kf - 1
+		d.rtxCurbBoundary.Store(d.rtpStats.ExtHighestSequenceNumber())
+		// but not the key frame answering an earlier step of this episode; the mark is read after
+		// the store so a key frame forwarded concurrently cannot be left above the boundary
+		if kf := d.rtxCurbKeyFrameSN.Load(); kf != 0 {
+			for {
+				b := d.rtxCurbBoundary.Load()
+				if b == 0 || d.rtxCurbBoundary.CompareAndSwap(b, kf-1) {
+					break
+				}
+			}
 		}
-		d.rtxCurbBoundary.Store(boundary)
 	}
 	if allocation.TemporalDownStep && d.params.KeyFrameOnTemporalDownStep && d.writable.Load() {
 		// the spatial layer stays locked, so the key frame requester does not ask for one;
