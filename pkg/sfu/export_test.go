@@ -108,6 +108,8 @@ func (d *DownTrack) RTXUncappedForTest() uint32 { return d.rtxUncapped.Load() }
 
 const RTXCurbKeyFrameRepairWindowForTest = rtxCurbKeyFrameRepairWindow
 
+const RTXCurbKeyFrameRepairBudgetForTest = rtxCurbKeyFrameRepairBudget
+
 // AgeRTXCurbKeyFrameMarkForTest backdates the key frame mark so it was set age ago.
 func (d *DownTrack) AgeRTXCurbKeyFrameMarkForTest(age time.Duration) {
 	d.rtxCurbKeyFrameAt.Store(mono.UnixNano() - int64(age))

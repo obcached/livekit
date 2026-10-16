@@ -815,6 +815,35 @@ func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 		require.EqualValues(t, 1, r.dt.RTXUncappedForTest())
 	})
 
+	t.Run("D8 a repair window serves at most its budget beyond maxAck", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.bucket(true)
+		r.preStep()
+		r.stepDown(s0t1)
+		r.writeForwarded(0, true) // K1: 6 packets, 6 x (maxAckKeyFrameRange - maxAck) = 54 > budget
+		for i := 0; i < 5; i++ {
+			r.writeContinuation(0)
+		}
+		r.writeForwarded(0, false) // the next frame
+		sns := r.subSNs(11)
+		k1 := sns[4:10]
+		require.EqualValues(t, k1[0]-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K1 moved the boundary")
+		require.Greater(t, len(k1)*(12-3), RTXCurbKeyFrameRepairBudgetForTest, "precondition: K1 can exceed the budget")
+
+		before := r.dh.receiver.ReadRTPCallCount()
+		for i := 0; i < 12; i++ {
+			time.Sleep(stepRigOutsideWindow)
+			r.dt.RetransmitPacketsForTest(k1)
+		}
+		require.EqualValues(t, RTXCurbKeyFrameRepairBudgetForTest, r.dt.RTXUncappedForTest(), "beyond maxAck stops at the budget")
+		require.Equal(t, len(k1)*3+RTXCurbKeyFrameRepairBudgetForTest, r.dh.receiver.ReadRTPCallCount()-before)
+		require.NotZero(t, r.dt.RTXCurbBoundaryForTest(), "the curb stays active")
+
+		rtx, curbed := r.nackTimes(sns[10], 3)
+		require.Equal(t, []int{1, 1, 1}, rtx, "a spent budget leaves maxAck untouched")
+		require.Equal(t, []int{0, 0, 0}, curbed)
+	})
+
 	t.Run("D4b a curb left armed by an earlier episode does not exempt the next one", func(t *testing.T) {
 		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
 		r.bucket(true)

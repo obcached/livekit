@@ -72,6 +72,9 @@ const (
 	// maxAck: about the receive bucket horizon (1.8 s at 166 pps), past which a repair attempt
 	// is a bucket miss anyway; a key frame completes or fails within +1.0..+1.6 s
 	rtxCurbKeyFrameRepairWindow = 2 * time.Second
+	// retransmissions beyond maxAck a repair window may serve in all: about 20/s over the window,
+	// so repairing the key frame cannot flood a link that is already saturated
+	rtxCurbKeyFrameRepairBudget = 40
 
 	waitBeforeSendPaddingOnMute = 100 * time.Millisecond
 	maxPaddingOnMuteDuration    = 5 * time.Second
@@ -2590,6 +2593,12 @@ func (d *DownTrack) retransmitPackets(nacks []uint16) {
 
 		if curbBoundary != 0 && epm.extSequenceNumber <= curbBoundary {
 			numCurbed++
+			continue
+		}
+
+		// the window's budget beyond maxAck is spent (rtxUncapped restarts with the move line of the key
+		// frame that opens a window): the rest of the key frame waits for the viewer's PLI
+		if epm.nacked > maxAck && d.rtxUncapped.Load() >= rtxCurbKeyFrameRepairBudget {
 			continue
 		}
 
