@@ -778,7 +778,7 @@ func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 		require.Zero(t, r.dt.RTXUncappedForTest())
 	})
 
-	t.Run("D6b a later key frame inside the window ends K1's exemption without its own", func(t *testing.T) {
+	t.Run("D6b a later key frame inside the window gets no window of its own (its boundary move curbs K1)", func(t *testing.T) {
 		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
 		r.bucket(true)
 		r.preStep()
