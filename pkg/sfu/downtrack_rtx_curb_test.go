@@ -518,8 +518,7 @@ func TestDownTrackRTXCurbOnTemporalDownStep(t *testing.T) {
 		open := r.commit(150_000, s0t0)
 		require.True(t, open.IsDeficient, "precondition: episode 2 is deficient")
 		require.False(t, open.TemporalDownStep, "precondition: episode 2 does not open with a temporal step")
-		r.nack(sns[0]) // the lazy release only runs when not deficient: the old boundary stays
-		require.NotZero(t, r.dt.RTXCurbBoundaryForTest(), "precondition: boundary lingers")
+		require.Zero(t, r.dt.RTXCurbBoundaryForTest(), "the first commit of episode 2 releases the stale curb")
 
 		// then the temporal step of episode 2
 		r.dt.ForceForwardLayerForTest(s0t1)
@@ -742,6 +741,33 @@ func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 		require.Equal(t, 1, c)
 	})
 
+	t.Run("D4b a curb left armed by an earlier episode does not exempt the next one", func(t *testing.T) {
+		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
+		r.bucket(true)
+		r.preStep()
+		r.stepDown(s0t1)
+		r.writeForwarded(0, true) // K1 of episode 1
+		r.writeForwarded(0, false)
+		sns := r.subSNs(6)
+		r.nackTimes(sns[5], 4)
+		require.EqualValues(t, 1, r.dt.RTXUncappedForTest(), "precondition: one retransmission beyond maxAck in episode 1")
+		require.False(t, r.commit(1_000_000, s0t2).IsDeficient, "episode 1 ends")
+		require.NotZero(t, r.dt.RTXCurbBoundaryForTest(), "precondition: no NACK arrived, the curb is still armed")
+
+		a := r.commit(250_000, s0t1)
+		require.True(t, a.IsDeficient, "precondition: episode 2 is deficient")
+		require.False(t, a.TemporalDownStep, "precondition: episode 2 has no temporal down-step")
+		require.Zero(t, r.dt.RTXCurbBoundaryForTest(), "the new episode releases the stale curb")
+		require.Zero(t, r.dt.RTXUncappedForTest(), "the release line reports and resets episode 1's uncapped count")
+
+		r.writeForwarded(0, true) // a key frame of episode 2
+		r.writeForwarded(0, false)
+		sns = r.subSNs(8)
+		rtx, _ := r.nackTimes(sns[7], 4)
+		require.Equal(t, []int{1, 1, 1, 0}, rtx, "no curb, no key frame range exemption")
+		require.Zero(t, r.dt.RTXUncappedForTest())
+	})
+
 	t.Run("D5 B off: no mark, no exemption", func(t *testing.T) {
 		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: false, layer: s0t2})
 		r.preStep()
@@ -758,12 +784,17 @@ func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 
 	t.Run("D5b A and B off (stock): no exemption", func(t *testing.T) {
 		r := newStepRig(t, stepRigOpts{rtxCurb: false, keyFrame: false, layer: s0t2})
+		r.bucket(true)
 		r.preStep()
 		r.stepDown(s0t1)
 		r.writeForwarded(0, true)
 		sns := r.subSNs(5)
+		require.Zero(t, r.dt.RTXCurbBoundaryForTest(), "stock: never armed")
 
 		rtx, _ := r.nackTimes(sns[4], 4)
 		require.Equal(t, []int{1, 1, 1, 0}, rtx)
+		require.False(t, r.commit(1_000_000, s0t2).IsDeficient)
+		require.Zero(t, r.dt.RTXCurbBoundaryForTest())
+		require.Zero(t, r.dt.RTXUncappedForTest(), "stock: the counter never moves")
 	})
 }

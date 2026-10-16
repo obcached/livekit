@@ -1822,7 +1822,11 @@ func (d *DownTrack) ProvisionalAllocateCommit() VideoAllocation {
 	allocation := d.forwarder.ProvisionalAllocateCommit()
 	if !wasDeficient {
 		// a new deficient episode starts here (whatever its first step): a key frame of an earlier
-		// episode does not bound it
+		// episode does not bound it, and a curb that episode left armed (no NACK since it ended)
+		// must not move to this episode's key frame
+		if d.rtxCurbBoundary.Swap(0) != 0 {
+			d.params.Logger.Infow("RTX curb released", "curbed", d.rtxCurbed.Swap(0), "uncapped", d.rtxUncapped.Swap(0), "reason", "not-deficient")
+		}
 		d.rtxCurbKeyFrameSN.Store(0)
 	}
 	if allocation.TemporalDownStep && d.params.RTXCurbOnTemporalDownStep {
