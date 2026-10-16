@@ -455,10 +455,16 @@ func Test_sequencer_keyFrameRangeExemption(t *testing.T) {
 
 	t.Run("S3 dedupe window still applies inside the range", func(t *testing.T) {
 		seq := newExemptionSequencer(t)
-		require.Len(t, nackOutsideWindow(seq, sn, extSN), 1)
+		// a 100 ms window (min(100 ms, 2*60 ms)): the back-to-back repeat stays inside it under -race
+		seq.setRTT(60)
+		nackAfterWindow := func() []extPacketMeta {
+			time.Sleep(110 * time.Millisecond)
+			return seq.getExtPacketMetas([]uint16{sn}, extSN)
+		}
+		require.Len(t, nackAfterWindow(), 1)
 		require.Empty(t, seq.getExtPacketMetas([]uint16{sn}, extSN), "repeat inside the dedupe window")
 		for i := 2; i <= maxAck+1; i++ {
-			require.Len(t, nackOutsideWindow(seq, sn, extSN), 1)
+			require.Len(t, nackAfterWindow(), 1)
 		}
 		require.Empty(t, seq.getExtPacketMetas([]uint16{sn}, extSN), "repeat inside the dedupe window, beyond maxAck")
 	})

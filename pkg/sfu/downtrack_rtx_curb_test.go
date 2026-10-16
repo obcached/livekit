@@ -577,12 +577,12 @@ func (r *stepRig) nackTimes(sn uint16, n int) (rtx []int, curbed []int) {
 func TestDownTrackRTXCurbKeyFrameRangeUncapped(t *testing.T) {
 	t.Run("D1 the key frame is retransmitted beyond maxAck under the curb", func(t *testing.T) {
 		r := newStepRig(t, stepRigOpts{rtxCurb: true, keyFrame: true, layer: s0t2})
-		sns := r.preStep()
+		r.preStep()
 		r.stepDown(s0t1)
 		r.writeForwarded(0, true) // K1
 		r.writeForwarded(0, false)
 		r.writeForwarded(0, false)
-		sns = r.subSNs(7)
+		sns := r.subSNs(7)
 		kf := sns[4]
 		require.EqualValues(t, kf-1, uint16(r.dt.RTXCurbBoundaryForTest()), "precondition: K1 moved the boundary")
 		require.Zero(t, r.dt.RTXUncappedForTest(), "precondition: nothing served beyond maxAck yet")
