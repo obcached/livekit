@@ -1034,6 +1034,10 @@ func (f *Forwarder) AllocateOptimal(availableLayers []int32, brs Bitrates, allow
 			requestLayerSpatial = highestAvailableLayer
 		}
 
+		holdApplied := false
+		holdSpatialLimit := maxLayerSpatialLimit
+		holdFloor := temporalFloor(minTemporalLayer, maxLayer, maxSeenLayer)
+
 		if currentLayer.IsValid() {
 			if (requestLayerSpatial == requestSpatial && currentLayer.Spatial == requestSpatial) || requestLayerSpatial == buffer.InvalidLayerSpatial {
 				// 1. current is locked to desired, stay there
@@ -1055,7 +1059,8 @@ func (f *Forwarder) AllocateOptimal(availableLayers []int32, brs Bitrates, allow
 					// will result in more load on the channel. Hold adds no load, but does not shed
 					// either: stay at the highest available layer <= current and <= the subscriber
 					// limit, carrying the current temporal (raised to the camera floor).
-					holdSpatialLimit := min(currentLayer.Spatial, maxLayerSpatialLimit)
+					holdApplied = true
+					holdSpatialLimit = min(currentLayer.Spatial, maxLayerSpatialLimit)
 					holdSpatial := buffer.InvalidLayerSpatial
 					for _, al := range availableLayers {
 						if al > holdSpatial && al <= holdSpatialLimit {
@@ -1068,7 +1073,7 @@ func (f *Forwarder) AllocateOptimal(availableLayers []int32, brs Bitrates, allow
 					}
 					alloc.TargetLayer = buffer.VideoLayer{
 						Spatial:  holdSpatial,
-						Temporal: min(max(currentLayer.Temporal, temporalFloor(minTemporalLayer, maxLayer, maxSeenLayer)), getMaxTemporal()),
+						Temporal: min(max(currentLayer.Temporal, holdFloor), getMaxTemporal()),
 					}
 				} else {
 					alloc.TargetLayer = buffer.VideoLayer{
@@ -1081,7 +1086,7 @@ func (f *Forwarder) AllocateOptimal(availableLayers []int32, brs Bitrates, allow
 		} else {
 			if hold {
 				// allocate minimal to make the stream active while `hold`ing, at the camera temporal floor.
-				holdFloor := temporalFloor(minTemporalLayer, maxLayer, maxSeenLayer)
+				holdApplied = true
 				if lowestAvailableLayer == buffer.InvalidLayerSpatial {
 					alloc.TargetLayer = buffer.VideoLayer{
 						Spatial:  0,
@@ -1107,6 +1112,18 @@ func (f *Forwarder) AllocateOptimal(availableLayers []int32, brs Bitrates, allow
 					alloc.RequestLayerSpatial = requestLayerSpatial
 				}
 			}
+		}
+
+		// one line per hold target change (EARLY_WARNING is rare), not per hold call
+		if holdApplied && alloc.TargetLayer != f.lastAllocation.TargetLayer {
+			f.logger.Infow(
+				"stream: early warning hold",
+				"current", currentLayer,
+				"target", alloc.TargetLayer,
+				"available", availableLayers,
+				"limit", holdSpatialLimit,
+				"floor", holdFloor,
+			)
 		}
 	}
 
