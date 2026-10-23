@@ -16,6 +16,8 @@ package sfu
 
 import (
 	"encoding/hex"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/pion/rtp/codecs"
@@ -534,6 +536,57 @@ func TestForwarderAllocateOptimalHold(t *testing.T) {
 			require.Equal(t, c.want, f.TargetLayer())
 		})
 	}
+}
+
+type holdRecordingLogger struct {
+	logger.Logger
+
+	mu    sync.Mutex
+	infos []string
+}
+
+func (l *holdRecordingLogger) Infow(msg string, keysAndValues ...any) {
+	l.mu.Lock()
+	l.infos = append(l.infos, msg)
+	l.mu.Unlock()
+	l.Logger.Infow(msg, keysAndValues...)
+}
+
+func (l *holdRecordingLogger) holdLines() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, msg := range l.infos {
+		if strings.Contains(msg, "early warning hold") {
+			n++
+		}
+	}
+	return n
+}
+
+// The hold INFO line is emitted once per hold target change, not on every hold call, and never without hold.
+func TestForwarderAllocateOptimalHoldLog(t *testing.T) {
+	l := &holdRecordingLogger{Logger: logger.GetLogger()}
+	f := NewForwarder(webrtc.RTPCodecTypeVideo, l, true, true, true, nil)
+	f.DetermineCodec(testutils.TestVP8Codec, nil, livekit.VideoLayer_MODE_UNUSED)
+	f.SetMaxPublishedLayer(buffer.DefaultMaxLayerSpatial)
+	f.SetMaxTemporalLayerSeen(buffer.DefaultMaxLayerTemporal)
+	f.vls.SetMax(buffer.VideoLayer{Spatial: 1, Temporal: 3})
+	current := buffer.VideoLayer{Spatial: 2, Temporal: 2}
+	f.vls.SetTarget(current)
+	f.vls.SetCurrent(current)
+	f.vls.SetRequestSpatial(2)
+	brs := Bitrates{{10, 11, 12, 13}, {20, 21, 22, 23}, {30, 31, 32, 33}}
+
+	f.AllocateOptimal([]int32{0, 1, 2}, brs, true, true, 1)
+	require.Equal(t, buffer.VideoLayer{Spatial: 1, Temporal: 2}, f.TargetLayer(), "precondition: hold stepped down")
+	require.Equal(t, 1, l.holdLines(), "hold target change logs once")
+
+	f.AllocateOptimal([]int32{0, 1, 2}, brs, true, true, 1)
+	require.Equal(t, 1, l.holdLines(), "unchanged hold target does not log again")
+
+	f.AllocateOptimal([]int32{0, 1, 2}, brs, true, false, 1)
+	require.Equal(t, 1, l.holdLines(), "no hold, no hold line")
 }
 
 func TestForwarderProvisionalAllocate(t *testing.T) {
