@@ -166,7 +166,7 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 		MaxLayer:            buffer.InvalidLayer,
 		DistanceToDesired:   0,
 	}
-	result := f.AllocateOptimal(nil, bitrates, true, false)
+	result := f.AllocateOptimal(nil, bitrates, true, false, 0)
 	require.Equal(t, expectedResult, result)
 	require.Equal(t, expectedResult, f.lastAllocation)
 
@@ -184,7 +184,7 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 		MaxLayer:            buffer.DefaultMaxLayer,
 		DistanceToDesired:   0,
 	}
-	result = f.AllocateOptimal(nil, bitrates, true, false)
+	result = f.AllocateOptimal(nil, bitrates, true, false, 0)
 	require.Equal(t, expectedResult, result)
 	require.Equal(t, expectedResult, f.lastAllocation)
 
@@ -203,7 +203,7 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 		MaxLayer:            buffer.DefaultMaxLayer,
 		DistanceToDesired:   0,
 	}
-	result = f.AllocateOptimal(nil, bitrates, true, false)
+	result = f.AllocateOptimal(nil, bitrates, true, false, 0)
 	require.Equal(t, expectedResult, result)
 	require.Equal(t, expectedResult, f.lastAllocation)
 
@@ -222,7 +222,7 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 		MaxLayer:            buffer.DefaultMaxLayer,
 		DistanceToDesired:   0,
 	}
-	result = f.AllocateOptimal(nil, bitrates, true, false)
+	result = f.AllocateOptimal(nil, bitrates, true, false, 0)
 	require.Equal(t, expectedResult, result)
 	require.Equal(t, expectedResult, f.lastAllocation)
 
@@ -242,7 +242,7 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 		MaxLayer:            f.vls.GetMax(),
 		DistanceToDesired:   -1,
 	}
-	result = f.AllocateOptimal(nil, bitrates, true, false)
+	result = f.AllocateOptimal(nil, bitrates, true, false, 0)
 	require.Equal(t, expectedResult, result)
 	require.Equal(t, expectedResult, f.lastAllocation)
 	require.Equal(t, buffer.DefaultMaxLayer, f.TargetLayer())
@@ -265,7 +265,7 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 		MaxLayer:            buffer.DefaultMaxLayer,
 		DistanceToDesired:   -0.5,
 	}
-	result = f.AllocateOptimal(nil, bitrates, true, false)
+	result = f.AllocateOptimal(nil, bitrates, true, false, 0)
 	require.Equal(t, expectedResult, result)
 	require.Equal(t, expectedResult, f.lastAllocation)
 	require.Equal(t, expectedTargetLayer, f.TargetLayer())
@@ -288,7 +288,7 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 		MaxLayer:            buffer.DefaultMaxLayer,
 		DistanceToDesired:   -0.75,
 	}
-	result = f.AllocateOptimal(nil, emptyBitrates, true, false)
+	result = f.AllocateOptimal(nil, emptyBitrates, true, false, 0)
 	require.Equal(t, expectedResult, result)
 	require.Equal(t, expectedResult, f.lastAllocation)
 	require.Equal(t, expectedTargetLayer, f.TargetLayer())
@@ -307,7 +307,7 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 		MaxLayer:            buffer.DefaultMaxLayer,
 		DistanceToDesired:   -0.5,
 	}
-	result = f.AllocateOptimal([]int32{0, 1}, bitrates, true, false)
+	result = f.AllocateOptimal([]int32{0, 1}, bitrates, true, false, 0)
 	require.Equal(t, expectedResult, result)
 	require.Equal(t, expectedResult, f.lastAllocation)
 	require.Equal(t, buffer.DefaultMaxLayer, f.TargetLayer())
@@ -328,7 +328,7 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 		MaxLayer:            buffer.DefaultMaxLayer,
 		DistanceToDesired:   1.25,
 	}
-	result = f.AllocateOptimal([]int32{1, 2}, bitrates, true, true)
+	result = f.AllocateOptimal([]int32{1, 2}, bitrates, true, true, 0)
 	require.Equal(t, expectedResult, result)
 	require.Equal(t, expectedResult, f.lastAllocation)
 	require.Equal(t, expectedTargetLayer, f.TargetLayer())
@@ -345,7 +345,7 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 		MaxLayer:            buffer.DefaultMaxLayer,
 		DistanceToDesired:   -0.5,
 	}
-	result = f.AllocateOptimal(nil, bitrates, true, false)
+	result = f.AllocateOptimal(nil, bitrates, true, false, 0)
 	require.Equal(t, expectedResult, result)
 	require.Equal(t, expectedResult, f.lastAllocation)
 	require.Equal(t, buffer.DefaultMaxLayer, f.TargetLayer())
@@ -366,7 +366,7 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 		MaxLayer:            buffer.DefaultMaxLayer,
 		DistanceToDesired:   2.25,
 	}
-	result = f.AllocateOptimal(nil, bitrates, true, true)
+	result = f.AllocateOptimal(nil, bitrates, true, true, 0)
 	require.Equal(t, expectedResult, result)
 	require.Equal(t, expectedResult, f.lastAllocation)
 	require.Equal(t, expectedTargetLayer, f.TargetLayer())
@@ -384,7 +384,7 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 		MaxLayer:            buffer.DefaultMaxLayer,
 		DistanceToDesired:   -1.0,
 	}
-	result = f.AllocateOptimal([]int32{0, 1}, emptyBitrates, false, false)
+	result = f.AllocateOptimal([]int32{0, 1}, emptyBitrates, false, false, 0)
 	require.Equal(t, expectedResult, result)
 	require.Equal(t, expectedResult, f.lastAllocation)
 	require.Equal(t, buffer.DefaultMaxLayer, f.TargetLayer())
@@ -405,7 +405,7 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 		MaxLayer:            buffer.DefaultMaxLayer,
 		DistanceToDesired:   -0.5,
 	}
-	result = f.AllocateOptimal([]int32{0, 1}, bitrates, true, false)
+	result = f.AllocateOptimal([]int32{0, 1}, bitrates, true, false, 0)
 	require.Equal(t, expectedResult, result)
 	require.Equal(t, expectedResult, f.lastAllocation)
 	require.Equal(t, expectedTargetLayer, f.TargetLayer())
@@ -427,7 +427,7 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 		MaxLayer:            buffer.DefaultMaxLayer,
 		DistanceToDesired:   0.5,
 	}
-	result = f.AllocateOptimal([]int32{1}, bitrates, true, false)
+	result = f.AllocateOptimal([]int32{1}, bitrates, true, false, 0)
 	require.Equal(t, expectedResult, result)
 	require.Equal(t, expectedResult, f.lastAllocation)
 	require.Equal(t, expectedTargetLayer, f.TargetLayer())
@@ -448,7 +448,7 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 		MaxLayer:            buffer.DefaultMaxLayer,
 		DistanceToDesired:   2.25,
 	}
-	result = f.AllocateOptimal([]int32{0, 1}, bitrates, true, true)
+	result = f.AllocateOptimal([]int32{0, 1}, bitrates, true, true, 0)
 	require.Equal(t, expectedResult, result)
 	require.Equal(t, expectedResult, f.lastAllocation)
 	require.Equal(t, expectedTargetLayer, f.TargetLayer())
@@ -471,7 +471,7 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 		MaxLayer:            f.vls.GetMax(),
 		DistanceToDesired:   0.0,
 	}
-	result = f.AllocateOptimal([]int32{0}, emptyBitrates, true, false)
+	result = f.AllocateOptimal([]int32{0}, emptyBitrates, true, false, 0)
 	require.Equal(t, expectedResult, result)
 	require.Equal(t, expectedResult, f.lastAllocation)
 	require.Equal(t, expectedTargetLayer, f.TargetLayer())
@@ -2597,7 +2597,7 @@ func TestForwarderInitialAcquisitionGrace(t *testing.T) {
 	// during the grace, the target aims straight at the requested layer (2) and requests a key
 	// frame for it, even though only layer 1 has been seen - so acquisition does not ramp up
 	// gradually as higher layers are detected
-	alloc := f.AllocateOptimal([]int32{0, 1}, bitrates, false, false)
+	alloc := f.AllocateOptimal([]int32{0, 1}, bitrates, false, false, 0)
 	require.Equal(t, int32(2), alloc.TargetLayer.Spatial)
 	require.Equal(t, int32(2), alloc.RequestLayerSpatial)
 
@@ -2609,7 +2609,7 @@ func TestForwarderInitialAcquisitionGrace(t *testing.T) {
 
 	// after the grace, the target falls back to the highest layer actually seen (1) instead of
 	// stalling while waiting for a requested layer that never showed up
-	alloc = f.AllocateOptimal([]int32{0, 1}, bitrates, false, false)
+	alloc = f.AllocateOptimal([]int32{0, 1}, bitrates, false, false, 0)
 	require.Equal(t, int32(1), alloc.TargetLayer.Spatial)
 	require.Equal(t, int32(1), alloc.RequestLayerSpatial)
 }
