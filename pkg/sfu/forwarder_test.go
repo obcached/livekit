@@ -526,10 +526,20 @@ func TestForwarderAllocateOptimalHold(t *testing.T) {
 		{"6 current S0T0, floor 0 (non-camera)", buffer.VideoLayer{Spatial: 2, Temporal: 3}, buffer.VideoLayer{Spatial: 0, Temporal: 0}, 0, []int32{0, 1, 2}, 0, buffer.VideoLayer{Spatial: 0, Temporal: 0}},
 		// carried temporal is clamped to the subscriber max temporal
 		{"clamp current T2 to max temporal 1", buffer.VideoLayer{Spatial: 1, Temporal: 1}, s2t2, 2, []int32{0, 1, 2}, 1, buffer.VideoLayer{Spatial: 1, Temporal: 1}},
+		// (7) fallback: only layers above current available -> lowest available at the floor, never the current temporal
+		{"7 current S0T2, only {1,2} available, floor 0", buffer.VideoLayer{Spatial: 2, Temporal: 3}, buffer.VideoLayer{Spatial: 0, Temporal: 2}, 2, []int32{1, 2}, 0, buffer.VideoLayer{Spatial: 1, Temporal: 0}},
+		{"7 current S0T2, only {1,2} available, floor 1", buffer.VideoLayer{Spatial: 2, Temporal: 3}, buffer.VideoLayer{Spatial: 0, Temporal: 2}, 2, []int32{1, 2}, 1, buffer.VideoLayer{Spatial: 1, Temporal: 1}},
+		{"7 current S0T1, only {2} available, floor 0", buffer.VideoLayer{Spatial: 2, Temporal: 3}, buffer.VideoLayer{Spatial: 0, Temporal: 1}, 2, []int32{2}, 0, buffer.VideoLayer{Spatial: 2, Temporal: 0}},
+		// (8) overshoot at the current spatial (limit 0, current S1 still available): keep the current temporal
+		{"8 overshoot current S1T2, limit 0, available {1,2}", buffer.VideoLayer{Spatial: 0, Temporal: 3}, buffer.VideoLayer{Spatial: 1, Temporal: 2}, 1, []int32{1, 2}, 1, buffer.VideoLayer{Spatial: 1, Temporal: 2}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			f := newHoldForwarder(c.maxLayer, c.current, c.requestSpatial)
+			require.Equal(t, c.current, f.vls.GetCurrent(), "precondition: current layer")
+			if c.current.IsValid() && c.want.Spatial > c.current.Spatial {
+				require.NotEqual(t, c.current.Temporal, c.want.Temporal, "precondition: fallback case must change the temporal")
+			}
 			result := f.AllocateOptimal(c.available, brs, true, true, c.floor)
 			require.Equal(t, c.want, result.TargetLayer)
 			require.Equal(t, c.want.Spatial, result.RequestLayerSpatial)
