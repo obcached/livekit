@@ -427,21 +427,23 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 	require.Equal(t, expectedResult, f.lastAllocation)
 	require.Equal(t, expectedTargetLayer, f.TargetLayer())
 
-	// when holding in above scenario, should switch to lowest available layer
+	// when holding in above scenario, should keep the current layer (S0T1) instead of dropping to
+	// {lowest available, T0}: hold adds no load but does not shed either
+	// (docs/superpowers/plans/2026-10-23-lk-hold-fix.md, change item 2)
 	expectedTargetLayer = buffer.VideoLayer{
 		Spatial:  0,
-		Temporal: 0,
+		Temporal: 1,
 	}
 	expectedResult = VideoAllocation{
 		PauseReason:         VideoPauseReasonNone,
-		BandwidthRequested:  bitrates[0][0],
-		BandwidthDelta:      bitrates[0][0] - bitrates[1][3],
+		BandwidthRequested:  bitrates[0][1],
+		BandwidthDelta:      bitrates[0][1] - bitrates[1][3],
 		BandwidthNeeded:     bitrates[2][1],
 		Bitrates:            bitrates,
 		TargetLayer:         expectedTargetLayer,
 		RequestLayerSpatial: 0,
 		MaxLayer:            buffer.DefaultMaxLayer,
-		DistanceToDesired:   2.25,
+		DistanceToDesired:   2.0,
 	}
 	result = f.AllocateOptimal([]int32{0, 1}, bitrates, true, true, 0)
 	require.Equal(t, expectedResult, result)
@@ -459,7 +461,7 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 	expectedResult = VideoAllocation{
 		PauseReason:         VideoPauseReasonFeedDry,
 		BandwidthRequested:  0,
-		BandwidthDelta:      0 - bitrates[0][0],
+		BandwidthDelta:      0 - bitrates[0][1], // previous allocation is the held S0T1 above
 		Bitrates:            emptyBitrates,
 		TargetLayer:         expectedTargetLayer,
 		RequestLayerSpatial: 0,
@@ -470,6 +472,68 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 	require.Equal(t, expectedResult, result)
 	require.Equal(t, expectedResult, f.lastAllocation)
 	require.Equal(t, expectedTargetLayer, f.TargetLayer())
+}
+
+// newHoldForwarder: a VP8 simulcast forwarder publishing S2T3, subscribed at maxLayer, forwarding current,
+// with the request spatial layer set to requestSpatial.
+func newHoldForwarder(maxLayer buffer.VideoLayer, current buffer.VideoLayer, requestSpatial int32) *Forwarder {
+	f := newForwarder(testutils.TestVP8Codec, webrtc.RTPCodecTypeVideo)
+	f.SetMaxPublishedLayer(buffer.DefaultMaxLayerSpatial)
+	f.SetMaxTemporalLayerSeen(buffer.DefaultMaxLayerTemporal)
+	f.vls.SetMax(maxLayer)
+	f.vls.SetTarget(current)
+	f.vls.SetCurrent(current)
+	f.vls.SetRequestSpatial(requestSpatial)
+	return f
+}
+
+// AllocateOptimal(hold=true) under EARLY_WARNING: keep the current layer (or the highest available layer <= current
+// and <= the viewport limit), carrying the current temporal raised to the camera floor; never {lowest, T0} while the
+// current layer is forwardable. Stock mutant: forwarder.go:1055-1058 (valid current) / :1070-1080 (invalid current).
+func TestForwarderAllocateOptimalHold(t *testing.T) {
+	brs := Bitrates{
+		{10, 11, 12, 13},
+		{20, 21, 22, 23},
+		{30, 31, 32, 33},
+	}
+	s2t2 := buffer.VideoLayer{Spatial: 2, Temporal: 2}
+	cases := []struct {
+		name           string
+		maxLayer       buffer.VideoLayer
+		current        buffer.VideoLayer
+		requestSpatial int32
+		available      []int32
+		floor          int32
+		want           buffer.VideoLayer
+	}{
+		// (1) grow request while holding: stay at current, no spatial up
+		{"1 current S2T2 available, limit 2, request differs", buffer.VideoLayer{Spatial: 2, Temporal: 3}, s2t2, 0, []int32{0, 1, 2}, 1, s2t2},
+		// (2) viewport shrink while holding: step down to the limit, keep the current temporal
+		{"2 viewport shrink to limit 0, floor 1", buffer.VideoLayer{Spatial: 0, Temporal: 3}, s2t2, 2, []int32{0, 1, 2}, 1, buffer.VideoLayer{Spatial: 0, Temporal: 2}},
+		{"2 viewport shrink to limit 0, floor 0 (keep-current not key-gated)", buffer.VideoLayer{Spatial: 0, Temporal: 3}, s2t2, 2, []int32{0, 1, 2}, 0, buffer.VideoLayer{Spatial: 0, Temporal: 2}},
+		// (3) shrink to limit 1: S1, not S0
+		{"3 viewport shrink to limit 1", buffer.VideoLayer{Spatial: 1, Temporal: 3}, s2t2, 2, []int32{0, 1, 2}, 1, buffer.VideoLayer{Spatial: 1, Temporal: 2}},
+		// (4) current layer stopped (publisher rid drop): highest available <= current
+		{"4 current S2 stopped, available {0,1}", buffer.VideoLayer{Spatial: 2, Temporal: 3}, s2t2, 2, []int32{0, 1}, 1, buffer.VideoLayer{Spatial: 1, Temporal: 2}},
+		// (5) current invalid: lowest available at the floor
+		{"5 current invalid, floor 1", buffer.VideoLayer{Spatial: 2, Temporal: 3}, buffer.InvalidLayer, 2, []int32{0, 1, 2}, 1, buffer.VideoLayer{Spatial: 0, Temporal: 1}},
+		{"5 current invalid, floor 1, nothing available", buffer.VideoLayer{Spatial: 2, Temporal: 3}, buffer.InvalidLayer, 2, nil, 1, buffer.VideoLayer{Spatial: 0, Temporal: 1}},
+		{"5 current invalid, floor 0 (stock)", buffer.VideoLayer{Spatial: 2, Temporal: 3}, buffer.InvalidLayer, 2, []int32{0, 1, 2}, 0, buffer.VideoLayer{Spatial: 0, Temporal: 0}},
+		// (6) current S0T0: the floor lifts the held temporal (S0 included in the hold path)
+		{"6 current S0T0, floor 1", buffer.VideoLayer{Spatial: 2, Temporal: 3}, buffer.VideoLayer{Spatial: 0, Temporal: 0}, 0, []int32{0, 1, 2}, 1, buffer.VideoLayer{Spatial: 0, Temporal: 1}},
+		{"6 current S0T0, floor 0 (non-camera)", buffer.VideoLayer{Spatial: 2, Temporal: 3}, buffer.VideoLayer{Spatial: 0, Temporal: 0}, 0, []int32{0, 1, 2}, 0, buffer.VideoLayer{Spatial: 0, Temporal: 0}},
+		// carried temporal is clamped to the subscriber max temporal
+		{"clamp current T2 to max temporal 1", buffer.VideoLayer{Spatial: 1, Temporal: 1}, s2t2, 2, []int32{0, 1, 2}, 1, buffer.VideoLayer{Spatial: 1, Temporal: 1}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newHoldForwarder(c.maxLayer, c.current, c.requestSpatial)
+			result := f.AllocateOptimal(c.available, brs, true, true, c.floor)
+			require.Equal(t, c.want, result.TargetLayer)
+			require.Equal(t, c.want.Spatial, result.RequestLayerSpatial)
+			require.Equal(t, c.want, f.TargetLayer())
+		})
+	}
 }
 
 func TestForwarderProvisionalAllocate(t *testing.T) {
