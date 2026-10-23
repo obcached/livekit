@@ -1047,14 +1047,28 @@ func (f *Forwarder) AllocateOptimal(availableLayers []int32, brs Bitrates, allow
 					Temporal: getMaxTemporal(),
 				}
 			} else {
-				// current layer has stopped, switch to lowest available if `hold`ing, else switch to highest available
+				// current layer has stopped or the request changed, keep (or step down from) the current layer
+				// if `hold`ing, else switch to highest available
 				if hold {
 					// if `hold` is requested, may be set due to early warning congestion
 					// signal, in that case layers are not increased as increasing layers
-					// will result in more load on the channel
+					// will result in more load on the channel. Hold adds no load, but does not shed
+					// either: stay at the highest available layer <= current and <= the subscriber
+					// limit, carrying the current temporal (raised to the camera floor).
+					holdSpatialLimit := min(currentLayer.Spatial, maxLayerSpatialLimit)
+					holdSpatial := buffer.InvalidLayerSpatial
+					for _, al := range availableLayers {
+						if al > holdSpatial && al <= holdSpatialLimit {
+							holdSpatial = al
+						}
+					}
+					if holdSpatial == buffer.InvalidLayerSpatial {
+						// overshoot, or current stopped with only higher layers available
+						holdSpatial = lowestAvailableLayer
+					}
 					alloc.TargetLayer = buffer.VideoLayer{
-						Spatial:  lowestAvailableLayer,
-						Temporal: 0,
+						Spatial:  holdSpatial,
+						Temporal: min(max(currentLayer.Temporal, temporalFloor(minTemporalLayer, maxLayer, maxSeenLayer)), getMaxTemporal()),
 					}
 				} else {
 					alloc.TargetLayer = buffer.VideoLayer{
@@ -1066,16 +1080,17 @@ func (f *Forwarder) AllocateOptimal(availableLayers []int32, brs Bitrates, allow
 			alloc.RequestLayerSpatial = alloc.TargetLayer.Spatial
 		} else {
 			if hold {
-				// allocate minimal to make the stream active while `hold`ing.
+				// allocate minimal to make the stream active while `hold`ing, at the camera temporal floor.
+				holdFloor := temporalFloor(minTemporalLayer, maxLayer, maxSeenLayer)
 				if lowestAvailableLayer == buffer.InvalidLayerSpatial {
 					alloc.TargetLayer = buffer.VideoLayer{
 						Spatial:  0,
-						Temporal: 0,
+						Temporal: holdFloor,
 					}
 				} else {
 					alloc.TargetLayer = buffer.VideoLayer{
 						Spatial:  lowestAvailableLayer,
-						Temporal: 0,
+						Temporal: holdFloor,
 					}
 				}
 				alloc.RequestLayerSpatial = alloc.TargetLayer.Spatial
