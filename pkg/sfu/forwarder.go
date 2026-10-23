@@ -1071,9 +1071,14 @@ func (f *Forwarder) AllocateOptimal(availableLayers []int32, brs Bitrates, allow
 						// overshoot, or current stopped with only higher layers available
 						holdSpatial = lowestAvailableLayer
 					}
+					holdTemporal := min(max(currentLayer.Temporal, holdFloor), getMaxTemporal())
+					if holdSpatial > currentLayer.Spatial {
+						// stepping spatial up: do not carry the current temporal, take the floor (stock takes T0)
+						holdTemporal = holdFloor
+					}
 					alloc.TargetLayer = buffer.VideoLayer{
 						Spatial:  holdSpatial,
-						Temporal: min(max(currentLayer.Temporal, holdFloor), getMaxTemporal()),
+						Temporal: holdTemporal,
 					}
 				} else {
 					alloc.TargetLayer = buffer.VideoLayer{
