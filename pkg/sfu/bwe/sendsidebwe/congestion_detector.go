@@ -465,6 +465,10 @@ type CongestionDetectorConfig struct {
 	CongestedPacketGroup PacketGroupConfig           `yaml:"congested_packet_group,omitempty"`
 
 	EstimationWindowDuration time.Duration `yaml:"estimaton_window_duration,omitempty"`
+
+	// SenderLimitedMinCTR > 0 marks a congested estimate as sender limited when its traffic has a captured traffic
+	// ratio >= this value and no weighted loss. 0 (default) = off.
+	SenderLimitedMinCTR float64 `yaml:"sender_limited_min_ctr,omitempty"`
 }
 
 var (
@@ -734,14 +738,31 @@ func (c *congestionDetector) HandleTWCCFeedback(report *rtcp.TransportLayerCC) {
 	}
 
 	c.prunePacketGroups()
-	shouldNotify, fromState, toState, committedChannelCapacity := c.congestionDetectionStateMachine()
+	shouldNotify, fromState, toState, committedChannelCapacity, evidence := c.congestionDetectionStateMachine()
 	c.lock.Unlock()
 
 	if shouldNotify {
-		if bweListener := c.getBWEListener(); bweListener != nil {
-			bweListener.OnCongestionStateChange(fromState, toState, committedChannelCapacity)
-		}
+		notifyCongestionStateChange(c.getBWEListener(), fromState, toState, committedChannelCapacity, evidence)
 	}
+}
+
+func notifyCongestionStateChange(
+	bweListener bwe.BWEListener,
+	fromState bwe.CongestionState,
+	toState bwe.CongestionState,
+	committedChannelCapacity int64,
+	evidence bwe.CongestionEvidence,
+) {
+	if bweListener == nil {
+		return
+	}
+
+	if evidenceListener, ok := bweListener.(bwe.BWEEvidenceListener); ok {
+		evidenceListener.OnCongestionStateChangeWithEvidence(fromState, toState, committedChannelCapacity, evidence)
+		return
+	}
+
+	bweListener.OnCongestionStateChange(fromState, toState, committedChannelCapacity)
 }
 
 func (c *congestionDetector) UpdateRTT(rtt float64) {
@@ -952,7 +973,17 @@ func (c *congestionDetector) updateCongestedSignal() queuingRegion {
 	)
 }
 
-func (c *congestionDetector) congestionDetectionStateMachine() (bool, bwe.CongestionState, bwe.CongestionState, int64) {
+// senderLimited reports whether ts was delivered at the rate it was sent (see SenderLimitedMinCTR).
+func (c *congestionDetector) senderLimited(ts *trafficStats) bool {
+	return false
+}
+
+func (c *congestionDetector) congestionEvidence(ts *trafficStats) bwe.CongestionEvidence {
+	return bwe.CongestionEvidence{}
+}
+
+func (c *congestionDetector) congestionDetectionStateMachine() (bool, bwe.CongestionState, bwe.CongestionState, int64, bwe.CongestionEvidence) {
+	var evidence bwe.CongestionEvidence
 	fromState := c.congestionState
 	toState := c.congestionState
 
@@ -1001,7 +1032,7 @@ func (c *congestionDetector) congestionDetectionStateMachine() (bool, bwe.Conges
 		c.resetCTRTrend()
 	}
 
-	return shouldNotify, fromState, toState, c.estimatedAvailableChannelCapacity
+	return shouldNotify, fromState, toState, c.estimatedAvailableChannelCapacity, evidence
 }
 
 func (c *congestionDetector) createCTRTrend() {

@@ -120,4 +120,27 @@ type BWEListener interface {
 	OnCongestionStateChange(fromState CongestionState, toState CongestionState, estimatedAvailableChannelCapacity int64)
 }
 
+// CongestionEvidence describes the traffic an estimate was measured on. It is a value copy, taken when the estimate is
+// made.
+type CongestionEvidence struct {
+	// SenderLimited is true when the measured traffic was delivered at the rate it was sent (captured traffic ratio at
+	// or above the configured minimum, no weighted loss): the estimate is then the sender's own rate, a lower bound of
+	// the channel capacity.
+	SenderLimited        bool
+	CapturedTrafficRatio float64
+	WeightedLoss         float64
+}
+
+// BWEEvidenceListener is an optional extension of BWEListener. A BWE that has evidence calls
+// OnCongestionStateChangeWithEvidence instead of OnCongestionStateChange when the listener implements it.
+type BWEEvidenceListener interface {
+	BWEListener
+	OnCongestionStateChangeWithEvidence(
+		fromState CongestionState,
+		toState CongestionState,
+		estimatedAvailableChannelCapacity int64,
+		evidence CongestionEvidence,
+	)
+}
+
 // ------------------------------------------------
