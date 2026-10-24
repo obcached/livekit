@@ -497,13 +497,24 @@ type congestionStateChangeData struct {
 	fromState                         bwe.CongestionState
 	toState                           bwe.CongestionState
 	estimatedAvailableChannelCapacity int64
+	evidence                          bwe.CongestionEvidence
 }
 
 // BWEListener implementation
 func (s *StreamAllocator) OnCongestionStateChange(fromState bwe.CongestionState, toState bwe.CongestionState, estimatedAvailableChannelCapacity int64) {
+	s.OnCongestionStateChangeWithEvidence(fromState, toState, estimatedAvailableChannelCapacity, bwe.CongestionEvidence{})
+}
+
+// BWEEvidenceListener implementation
+func (s *StreamAllocator) OnCongestionStateChangeWithEvidence(
+	fromState bwe.CongestionState,
+	toState bwe.CongestionState,
+	estimatedAvailableChannelCapacity int64,
+	evidence bwe.CongestionEvidence,
+) {
 	s.postEvent(Event{
 		signal:                    streamAllocatorSignalCongestionStateChange,
-		congestionStateChangeData: congestionStateChangeData{fromState, toState, estimatedAvailableChannelCapacity},
+		congestionStateChangeData: congestionStateChangeData{fromState, toState, estimatedAvailableChannelCapacity, evidence},
 	})
 }
 
