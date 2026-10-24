@@ -247,6 +247,9 @@ type StreamAllocator struct {
 
 	state streamAllocatorState
 
+	// evidence of the latest CONGESTED notify: the congestion was sender limited
+	senderLimitedCongestion bool
+
 	activeProbeClusterId   ccutils.ProbeClusterId
 	activeProbeGoalReached bool
 	activeProbeCongesting  bool
@@ -878,9 +881,19 @@ func (s *StreamAllocator) handleSignalCongestionStateChange(event Event) {
 		s.maybeStopProbe()
 	}
 
+	if cscd.toState == bwe.CongestionStateCongested {
+		s.senderLimitedCongestion = cscd.evidence.SenderLimited
+	}
+
 	// some tracks may have been held at sub-optimal allocation
-	// during early warning hold (if there was one)
-	if isHoldableCongestionState(cscd.fromState) && cscd.toState == bwe.CongestionStateNone && s.state == streamAllocatorStateStable {
+	// during early warning hold (if there was one), or kept at their target
+	// while a sender-limited congestion lasted (nothing grows while CONGESTED)
+	releaseHeld := isHoldableCongestionState(cscd.fromState) ||
+		(cscd.fromState == bwe.CongestionStateCongested && s.senderLimitedCongestion)
+	if cscd.toState == bwe.CongestionStateNone {
+		s.senderLimitedCongestion = false
+	}
+	if releaseHeld && cscd.toState == bwe.CongestionStateNone && s.state == streamAllocatorStateStable {
 		update := NewStreamStateUpdate()
 		for _, track := range s.getVideoTracks() {
 			allocation := track.AllocateOptimal(cFlagAllowOvershootWhileOptimal, false, s.params.Config.CameraMinTemporalLayer)
@@ -901,15 +914,30 @@ func (s *StreamAllocator) handleSignalCongestionStateChange(event Event) {
 				)
 			}
 		} else {
+			expectedUsage := s.getExpectedBandwidthUsage()
 			s.params.Logger.Debugw(
 				"stream allocator: channel congestion detected, updating channel capacity",
 				"old(bps)", s.committedChannelCapacity,
 				"new(bps)", cscd.estimatedAvailableChannelCapacity,
-				"expectedUsage(bps)", s.getExpectedBandwidthUsage(),
+				"expectedUsage(bps)", expectedUsage,
 			)
-			s.committedChannelCapacity = cscd.estimatedAvailableChannelCapacity
+			if cscd.evidence.SenderLimited && cscd.estimatedAvailableChannelCapacity < expectedUsage {
+				// the estimate was measured on traffic this allocator limited, so it is a lower bound of the
+				// channel capacity: keep the current allocation, which fits the expected usage, and do not
+				// re-allocate (a pass at this budget could only shed or reshuffle while nothing may grow)
+				s.params.Logger.Infow(
+					"stream allocator: sender-limited congestion, committing expected usage",
+					"estimate(bps)", cscd.estimatedAvailableChannelCapacity,
+					"expectedUsage(bps)", expectedUsage,
+					"capturedTrafficRatio", cscd.evidence.CapturedTrafficRatio,
+					"weightedLoss", cscd.evidence.WeightedLoss,
+				)
+				s.committedChannelCapacity = expectedUsage
+			} else {
+				s.committedChannelCapacity = cscd.estimatedAvailableChannelCapacity
 
-			s.allocateAllTracks()
+				s.allocateAllTracks()
+			}
 		}
 	}
 }
@@ -927,6 +955,8 @@ func (s *StreamAllocator) setState(state streamAllocatorState) {
 		s.maybeStopProbe()
 
 		s.params.BWE.Reset()
+		// the reset sends no NONE notify
+		s.senderLimitedCongestion = false
 
 		s.activeProbeClusterId = ccutils.ProbeClusterIdInvalid
 		go s.ping(s.pingGeneration.Inc(), cPingLong)
