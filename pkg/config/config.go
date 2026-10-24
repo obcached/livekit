@@ -232,6 +232,11 @@ type CongestionControlConfig struct {
 
 // Validate reports configuration that would otherwise be ignored at runtime.
 func (c CongestionControlConfig) Validate() error {
+	// before the pacer switch, whose valid case returns
+	if minCTR := c.SendSideBWE.CongestionDetector.SenderLimitedMinCTR; !(minCTR >= 0 && minCTR <= 1) {
+		return fmt.Errorf("invalid send_side_bwe.congestion_detector.sender_limited_min_ctr %v, must be in [0, 1]", minCTR)
+	}
+
 	switch pacer.PacerBehavior(c.SendSideBWEPacer) {
 	case "", pacer.PacerBehaviorPassThrough, pacer.PacerBehaviorNoQueue, pacer.PacerBehaviorLeakybucket:
 		return nil

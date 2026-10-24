@@ -341,3 +341,40 @@ func TestCameraMinTemporalLayerParse(t *testing.T) {
 	require.Equal(t, int32(0), conf.RTC.CongestionControl.StreamAllocator.CameraMinTemporalLayer)
 	require.Equal(t, streamallocator.DefaultStreamAllocatorConfig, conf.RTC.CongestionControl.StreamAllocator)
 }
+
+// U10: sender_limited_min_ctr is a ratio in [0, 1]; 0 (absent) = off. The check runs before the pacer switch,
+// whose valid case returns early.
+func TestNewConfigValidatesSenderLimitedMinCTR(t *testing.T) {
+	cases := []struct {
+		value   string
+		want    float64
+		wantErr bool
+	}{
+		{value: "0", want: 0},
+		{value: "0.99", want: 0.99},
+		{value: "1", want: 1},
+		{value: "-0.1", wantErr: true},
+		{value: "1.1", wantErr: true},
+		{value: ".nan", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.value, func(t *testing.T) {
+			content := "rtc:\n  congestion_control:\n    send_side_bwe:\n      congestion_detector:\n        sender_limited_min_ctr: " + tc.value
+			conf, err := NewConfig(content, true, nil, nil)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "sender_limited_min_ctr")
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, tc.want, conf.RTC.CongestionControl.SendSideBWE.CongestionDetector.SenderLimitedMinCTR)
+		})
+	}
+
+	// key absent: off
+	conf, err := NewConfig("", true, nil, nil)
+	require.NoError(t, err)
+	require.Zero(t, conf.RTC.CongestionControl.SendSideBWE.CongestionDetector.SenderLimitedMinCTR)
+}
