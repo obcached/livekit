@@ -333,6 +333,21 @@ func TestSenderLimitedFlagLatestWins(t *testing.T) {
 	require.Equal(t, slS2T2, floorTarget(t, track, floorBrsLadder))
 }
 
+// U8d: a new transition overwrites the flag. Reachable when the BWE resets to NONE without a notify (periodic ping
+// while DEFICIENT) and a new episode starts. Mutant: the flag sticks (`flag || evidence.SenderLimited`).
+func TestSenderLimitedFlagLatestTransitionWins(t *testing.T) {
+	fx, _ := newSLFixture(t)
+	track := slHeldAtS0(t, fx, 160, true)
+	require.True(t, fx.s.senderLimitedCongestion, "precondition: flag set by the transition")
+
+	fx.congestedSL(200, false)
+	require.False(t, fx.s.senderLimitedCongestion, "the latest transition evidence wins")
+	slGrowViewport(t, fx, track)
+
+	fx.notify(bwe.CongestionStateCongested, bwe.CongestionStateNone, 200, false)
+	require.Equal(t, slS0T2, floorTarget(t, track, floorBrsLadder))
+}
+
 // U-alloc-trend: after a sender-limited transition clamp, a zero-evidence trend fire below usage takes the stock
 // path (commit the estimate, re-allocate) and keeps the flag. Mutants: A-2 reads the flag instead of the notify's
 // evidence (clamps again); the fromState guard removed (flag cleared).
