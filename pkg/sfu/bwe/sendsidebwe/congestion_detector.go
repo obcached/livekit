@@ -1027,33 +1027,16 @@ func (c *congestionDetector) congestionDetectionStateMachine() (bool, bwe.Conges
 	if c.congestedCTRTrend != nil && c.congestedCTRTrend.GetDirection() == ccutils.TrendDirectionDownward {
 		congestedAckedBitrate := c.congestedTrafficStats.AcknowledgedBitrate()
 		if congestedAckedBitrate < c.estimatedAvailableChannelCapacity {
-			if c.senderLimited(c.congestedTrafficStats) {
-				// the traffic was delivered at the rate it was sent, so the acked rate is the sender's own rate,
-				// not the channel capacity: lowering the estimate to it would only ratchet the allocation down
-				c.params.Logger.Infow(
-					"send side bwe: sender-limited, ignoring captured traffic ratio trend",
-					"estimatedAvailableChannelCapacity", c.estimatedAvailableChannelCapacity,
-					"acknowledgedBitrate", congestedAckedBitrate,
-					"capturedTrafficRatio", c.congestedTrafficStats.CapturedTrafficRatio(),
-					"weightedLoss", c.congestedTrafficStats.WeightedLoss(),
-				)
-			} else {
-				c.estimatedAvailableChannelCapacity = congestedAckedBitrate
+			c.estimatedAvailableChannelCapacity = congestedAckedBitrate
 
-				c.params.Logger.Infow(
-					"send side bwe: captured traffic ratio is trending downward",
-					"channel", c.congestedCTRTrend,
-					"trafficStats", c.congestedTrafficStats,
-					"estimatedAvailableChannelCapacity", c.estimatedAvailableChannelCapacity,
-				)
+			c.params.Logger.Infow(
+				"send side bwe: captured traffic ratio is trending downward",
+				"channel", c.congestedCTRTrend,
+				"trafficStats", c.congestedTrafficStats,
+				"estimatedAvailableChannelCapacity", c.estimatedAvailableChannelCapacity,
+			)
 
-				if !shouldNotify {
-					// copied before the reset below replaces the congested traffic stats;
-					// a state transition in the same call keeps its own evidence
-					evidence = c.congestionEvidence(c.congestedTrafficStats)
-				}
-				shouldNotify = true
-			}
+			shouldNotify = true
 		}
 
 		// reset to get new set of samples for next trend
