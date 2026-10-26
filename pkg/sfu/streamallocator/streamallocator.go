@@ -881,7 +881,8 @@ func (s *StreamAllocator) handleSignalCongestionStateChange(event Event) {
 		s.maybeStopProbe()
 	}
 
-	if cscd.toState == bwe.CongestionStateCongested {
+	if cscd.toState == bwe.CongestionStateCongested && cscd.fromState != bwe.CongestionStateCongested {
+		// the flag is the latest transition evidence: a CONGESTED -> CONGESTED trend fire carries none
 		s.senderLimitedCongestion = cscd.evidence.SenderLimited
 	}
 
