@@ -121,12 +121,16 @@ func (c *floorFixture) addAllocated(id string, maxSpatial, maxTemporal int32) *T
 }
 
 func (c *floorFixture) notify(from, to bwe.CongestionState, estimate int64, senderLimited bool) {
+	c.notifyEvidence(from, to, estimate, bwe.CongestionEvidence{SenderLimited: senderLimited, CapturedTrafficRatio: 0.998})
+}
+
+func (c *floorFixture) notifyEvidence(from, to bwe.CongestionState, estimate int64, evidence bwe.CongestionEvidence) {
 	c.s.handleSignalCongestionStateChange(Event{
 		congestionStateChangeData: congestionStateChangeData{
 			fromState:                         from,
 			toState:                           to,
 			estimatedAvailableChannelCapacity: estimate,
-			evidence:                          bwe.CongestionEvidence{SenderLimited: senderLimited, CapturedTrafficRatio: 0.998},
+			evidence:                          evidence,
 		},
 	})
 }
@@ -312,18 +316,43 @@ func TestSenderLimitedFlagClearedOnStable(t *testing.T) {
 	require.Equal(t, slS0T2, floorTarget(t, track, floorBrsLadder))
 }
 
-// U8c: the latest CONGESTED notify wins. Mutant: `= true` instead of `= evidence.SenderLimited`.
+// U8c: the flag is the latest TRANSITION evidence (D-b10): a zero-evidence trend fire in the same episode keeps it,
+// and the release happens at NONE. Mutant: the fromState guard removed (the trend fire clears the flag).
 func TestSenderLimitedFlagLatestWins(t *testing.T) {
 	fx, _ := newSLFixture(t)
 	track := slHeldAtS0(t, fx, 160, true)
 	require.Equal(t, int64(200), fx.s.committedChannelCapacity, "precondition: clamped")
+	require.True(t, fx.s.senderLimitedCongestion, "precondition: flag set by the transition")
 
-	// trend re-commit in the same episode, not sender limited, at usage: the stock pass keeps S0T2
-	fx.notify(bwe.CongestionStateCongested, bwe.CongestionStateCongested, 200, false)
+	// trend re-commit in the same episode, zero evidence, at usage: the stock pass keeps S0T2
+	fx.notifyEvidence(bwe.CongestionStateCongested, bwe.CongestionStateCongested, 200, bwe.CongestionEvidence{})
+	require.True(t, fx.s.senderLimitedCongestion, "a trend fire keeps the transition flag")
 	slGrowViewport(t, fx, track)
 
 	fx.notify(bwe.CongestionStateCongested, bwe.CongestionStateNone, 200, false)
-	require.Equal(t, slS0T2, floorTarget(t, track, floorBrsLadder))
+	require.Equal(t, slS2T2, floorTarget(t, track, floorBrsLadder))
+}
+
+// U-alloc-trend: after a sender-limited transition clamp, a zero-evidence trend fire below usage takes the stock
+// path (commit the estimate, re-allocate) and keeps the flag. Mutants: A-2 reads the flag instead of the notify's
+// evidence (clamps again); the fromState guard removed (flag cleared).
+func TestSenderLimitedTrendFireAfterClamp(t *testing.T) {
+	fx, l := newSLFixture(t)
+	fx.addAllocated("a", 0, 2)
+	usage := fx.s.getExpectedBandwidthUsage()
+	fx.s.overriddenChannelCapacity = usage
+
+	fx.congestedSL(usage-40, true)
+	require.Equal(t, usage, fx.s.committedChannelCapacity, "precondition: clamped at usage")
+	require.True(t, fx.s.senderLimitedCongestion, "precondition: flag set")
+	require.Equal(t, 1, l.infoCount(slCommitLine), "precondition: A-2 fired")
+	require.Equal(t, 0, l.debugCount(slSpyLine), "precondition: no re-allocation on the clamp")
+
+	fx.notifyEvidence(bwe.CongestionStateCongested, bwe.CongestionStateCongested, usage-40, bwe.CongestionEvidence{})
+	require.Equal(t, usage-40, fx.s.committedChannelCapacity)
+	require.Equal(t, 1, l.debugCount(slSpyLine), "stock path: allocateAllTracks runs")
+	require.Equal(t, 1, l.infoCount(slCommitLine), "no second clamp")
+	require.True(t, fx.s.senderLimitedCongestion, "flag unchanged by a trend fire")
 }
 
 // U9: the 3-arg listener path (RemoteBWE, old producers) is stock: zero evidence, so the estimate is committed and
