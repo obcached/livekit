@@ -53,10 +53,7 @@ func (l *slRecordingLogger) count(prefix string) int {
 	return n
 }
 
-const (
-	slTrendLine    = "send side bwe: captured traffic ratio is trending downward"
-	slIgnoringLine = "send side bwe: sender-limited, ignoring captured traffic ratio trend"
-)
+const slTrendLine = "send side bwe: captured traffic ratio is trending downward"
 
 func newSLDetector(minCTR float64, l logger.Logger) *congestionDetector {
 	if l == nil {
@@ -128,42 +125,32 @@ func forceCongestedWithDownwardTrend(t *testing.T, c *congestionDetector, ts *tr
 	c.estimatedAvailableChannelCapacity = estimate
 }
 
-// U2: A-1 suppresses the sender-limited trend re-commit. Mutants: guard removed; trend reset moved into the
-// non-suppressed branch.
-func TestSenderLimitedTrendSuppressed(t *testing.T) {
+// U-a1gone: a sender-limited downward CTR trend lowers the estimate and notifies like stock, with zero evidence
+// (transitions only). Mutants: the A-1 guard re-inserted (not lowered); the trend-fire evidence copy re-inserted
+// (SenderLimited true).
+func TestSenderLimitedTrendNotIgnored(t *testing.T) {
 	const estimate = int64(2_000_000)
 
-	for _, c := range []struct {
-		name         string
-		key          float64
-		wantEstimate int64
-		wantNotify   bool
-		wantTrend    int
-		wantIgnoring int
-	}{
-		{"key 0 = stock", 0, 1_000_000, true, 1, 0},
-		{"key 0.99", 0.99, estimate, false, 0, 1},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			l := &slRecordingLogger{Logger: logger.GetLogger()}
-			d := newSLDetector(c.key, l)
-			forceCongestedWithDownwardTrend(t, d, slTrafficStats(1000, 1000, 0), estimate)
-			require.Less(t, d.congestedTrafficStats.AcknowledgedBitrate(), estimate, "precondition: acked < estimate")
-			trendBefore := d.congestedCTRTrend
+	for _, key := range []float64{0, 0.99} {
+		l := &slRecordingLogger{Logger: logger.GetLogger()}
+		d := newSLDetector(key, l)
+		forceCongestedWithDownwardTrend(t, d, slTrafficStats(1000, 1000, 0), estimate)
+		acked := d.congestedTrafficStats.AcknowledgedBitrate()
+		require.Less(t, acked, estimate, "precondition: acked < estimate")
+		require.Equal(t, key > 0, d.senderLimited(d.congestedTrafficStats), "precondition: sender limited iff key > 0")
+		trendBefore := d.congestedCTRTrend
 
-			notify, from, to, got, _ := d.congestionDetectionStateMachine()
-			require.Equal(t, bwe.CongestionStateCongested, from)
-			require.Equal(t, bwe.CongestionStateCongested, to)
-			require.Equal(t, c.wantEstimate, got)
-			require.Equal(t, c.wantEstimate, d.estimatedAvailableChannelCapacity)
-			require.Equal(t, c.wantNotify, notify)
-			require.Equal(t, c.wantTrend, l.count(slTrendLine))
-			require.Equal(t, c.wantIgnoring, l.count(slIgnoringLine))
+		notify, from, to, got, ev := d.congestionDetectionStateMachine()
+		require.True(t, notify, "key %v", key)
+		require.Equal(t, bwe.CongestionStateCongested, from)
+		require.Equal(t, bwe.CongestionStateCongested, to)
+		require.Equal(t, acked, got, "key %v", key)
+		require.Equal(t, acked, d.estimatedAvailableChannelCapacity)
+		require.Equal(t, bwe.CongestionEvidence{}, ev, "key %v", key)
+		require.Equal(t, 1, l.count(slTrendLine))
 
-			// the reset is unconditional: a new trend with no samples
-			require.NotSame(t, trendBefore, d.congestedCTRTrend)
-			require.False(t, d.congestedCTRTrend.HasEnoughSamples())
-		})
+		require.NotSame(t, trendBefore, d.congestedCTRTrend)
+		require.False(t, d.congestedCTRTrend.HasEnoughSamples())
 	}
 }
 
@@ -190,7 +177,6 @@ func TestSenderLimitedTrendRealUndershoot(t *testing.T) {
 			require.Equal(t, acked, got)
 			require.False(t, ev.SenderLimited)
 			require.Equal(t, 1, l.count(slTrendLine))
-			require.Equal(t, 0, l.count(slIgnoringLine))
 		})
 	}
 }
@@ -227,8 +213,7 @@ func slQueuingGroups(n int) []*packetGroup {
 	return groups
 }
 
-// U4(a): the evidence is a value copy of the stats the estimate was made on. Mutants: evidence from the wrong stats;
-// trend-fire copy taken after resetCTRTrend().
+// U4(a): the evidence is a value copy of the stats the estimate was made on. Mutant: evidence from the wrong stats.
 func TestSenderLimitedEvidenceTransition(t *testing.T) {
 	for _, c := range []struct {
 		key  float64
@@ -263,6 +248,7 @@ func TestSenderLimitedEvidenceTransition(t *testing.T) {
 	}
 }
 
+// a trend fire carries zero evidence: the allocator acts on transition evidence only (D-b7).
 func TestSenderLimitedEvidenceTrendFire(t *testing.T) {
 	d := newSLDetector(0.99, nil)
 	ts := slTrafficStats(900, 1000, 0)
@@ -270,15 +256,7 @@ func TestSenderLimitedEvidenceTrendFire(t *testing.T) {
 
 	notify, _, _, _, ev := d.congestionDetectionStateMachine()
 	require.True(t, notify)
-	require.Equal(t, bwe.CongestionEvidence{SenderLimited: false, CapturedTrafficRatio: 0.9, WeightedLoss: 0}, ev)
-
-	// the reset replaced the stats: a copy taken after it would carry the fresh, empty stats
-	require.NotSame(t, ts, d.congestedTrafficStats)
-	require.NotEqual(t, ev.CapturedTrafficRatio, d.congestedTrafficStats.CapturedTrafficRatio())
-
-	// a value copy: mutating the source after the call does not change the evidence
-	ts.sendDelta = 100
-	require.Equal(t, 0.9, ev.CapturedTrafficRatio)
+	require.Equal(t, bwe.CongestionEvidence{}, ev)
 }
 
 type slPlainListener struct {
