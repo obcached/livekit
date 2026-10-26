@@ -15,6 +15,7 @@
 package sendsidebwe
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -132,25 +133,27 @@ func TestSenderLimitedTrendNotIgnored(t *testing.T) {
 	const estimate = int64(2_000_000)
 
 	for _, key := range []float64{0, 0.99} {
-		l := &slRecordingLogger{Logger: logger.GetLogger()}
-		d := newSLDetector(key, l)
-		forceCongestedWithDownwardTrend(t, d, slTrafficStats(1000, 1000, 0), estimate)
-		acked := d.congestedTrafficStats.AcknowledgedBitrate()
-		require.Less(t, acked, estimate, "precondition: acked < estimate")
-		require.Equal(t, key > 0, d.senderLimited(d.congestedTrafficStats), "precondition: sender limited iff key > 0")
-		trendBefore := d.congestedCTRTrend
+		t.Run(fmt.Sprintf("key %v", key), func(t *testing.T) {
+			l := &slRecordingLogger{Logger: logger.GetLogger()}
+			d := newSLDetector(key, l)
+			forceCongestedWithDownwardTrend(t, d, slTrafficStats(1000, 1000, 0), estimate)
+			acked := d.congestedTrafficStats.AcknowledgedBitrate()
+			require.Less(t, acked, estimate, "precondition: acked < estimate")
+			require.Equal(t, key > 0, d.senderLimited(d.congestedTrafficStats), "precondition: sender limited iff key > 0")
+			trendBefore := d.congestedCTRTrend
 
-		notify, from, to, got, ev := d.congestionDetectionStateMachine()
-		require.True(t, notify, "key %v", key)
-		require.Equal(t, bwe.CongestionStateCongested, from)
-		require.Equal(t, bwe.CongestionStateCongested, to)
-		require.Equal(t, acked, got, "key %v", key)
-		require.Equal(t, acked, d.estimatedAvailableChannelCapacity)
-		require.Equal(t, bwe.CongestionEvidence{}, ev, "key %v", key)
-		require.Equal(t, 1, l.count(slTrendLine))
+			notify, from, to, got, ev := d.congestionDetectionStateMachine()
+			require.True(t, notify)
+			require.Equal(t, bwe.CongestionStateCongested, from)
+			require.Equal(t, bwe.CongestionStateCongested, to)
+			require.Equal(t, acked, got)
+			require.Equal(t, acked, d.estimatedAvailableChannelCapacity)
+			require.Equal(t, bwe.CongestionEvidence{}, ev)
+			require.Equal(t, 1, l.count(slTrendLine))
 
-		require.NotSame(t, trendBefore, d.congestedCTRTrend)
-		require.False(t, d.congestedCTRTrend.HasEnoughSamples())
+			require.NotSame(t, trendBefore, d.congestedCTRTrend)
+			require.False(t, d.congestedCTRTrend.HasEnoughSamples())
+		})
 	}
 }
 
