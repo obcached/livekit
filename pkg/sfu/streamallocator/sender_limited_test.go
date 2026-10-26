@@ -135,8 +135,9 @@ func (c *floorFixture) notifyEvidence(from, to bwe.CongestionState, estimate int
 	})
 }
 
+// congestedSL notifies the only transition into CONGESTED the send side detector makes: EARLY_WARNING -> CONGESTED.
 func (c *floorFixture) congestedSL(estimate int64, senderLimited bool) {
-	c.notify(bwe.CongestionStateNone, bwe.CongestionStateCongested, estimate, senderLimited)
+	c.notify(bwe.CongestionStateEarlyWarning, bwe.CongestionStateCongested, estimate, senderLimited)
 }
 
 var (
