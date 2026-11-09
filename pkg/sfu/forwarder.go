@@ -1284,7 +1284,8 @@ func (f *Forwarder) ProvisionalAllocateGetCooperativeTransition(allowOvershoot b
 			existingTargetLayer.Temporal <= f.provisional.maxLayer.Temporal
 		if existingBelowFloor {
 			// a target below the camera temporal floor moves down to the first spatial layer (highest first) with a
-			// floor-compliant layer that costs no more than the target, taking the highest such temporal layer.
+			// floor-compliant layer that costs no more than the target (any, when the target has stopped), taking the
+			// highest such temporal layer.
 			// Within the subscriber limit, the target is otherwise preserved (never a costlier move); above the
 			// limit, it otherwise moves to the cheapest floor-compliant layer under the limit, whatever it costs.
 			existingBitrate := f.provisional.bitrates[existingTargetLayer.Spatial][existingTargetLayer.Temporal]
@@ -1298,7 +1299,7 @@ func (f *Forwarder) ProvisionalAllocateGetCooperativeTransition(allowOvershoot b
 					if bitrate == 0 || belowTemporalFloor(layer, floor) {
 						continue
 					}
-					if existingBitrate != 0 && bitrate <= existingBitrate {
+					if existingBitrate == 0 || bitrate <= existingBitrate {
 						maximalLayer = layer
 						maximalBandwidthRequired = bitrate
 						break
