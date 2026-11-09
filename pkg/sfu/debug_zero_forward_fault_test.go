@@ -75,6 +75,21 @@ type stallScenario struct {
 	noStalledWrites bool
 }
 
+// newFaultedDownTrack builds the downtrack, sets the fault, then binds it, in the
+// order SubscribedTrack uses.
+func newFaultedDownTrack(tb testing.TB, params DownTrackParams, fault *ZeroForwardFault, bind bool) *DownTrack {
+	tb.Helper()
+	dt, _ := newUnwiredDownTrack(tb, params, false)
+	dt.SetZeroForwardFault(fault)
+	if bind {
+		_, err := dt.Bind(&fakeTrackLocalContext{codecs: params.Codecs, ssrc: 0x55667788})
+		require.NoError(tb, err)
+		dt.SetConnected()
+		require.True(tb, dt.IsWritableForTest(), "downtrack should be writable")
+	}
+	return dt
+}
+
 // runStallScenario forwards a few packets, then keeps offering packets that are not
 // forwarded, with checks on a 3 s cadence; it returns the recorded lines.
 func runStallScenario(t *testing.T, sc stallScenario) *stallLogRecorder {
@@ -86,11 +101,10 @@ func runStallScenario(t *testing.T, sc stallScenario) *stallLogRecorder {
 	if sc.fault == nil {
 		sc.fault = NewZeroForwardFault(time.Second)
 	}
-	dt, _ := newUnwiredDownTrack(t, DownTrackParams{
-		Codecs:           []webrtc.RTPCodecParameters{sc.codec},
-		Logger:           logger.NewTestLoggerLevel(rec, 0),
-		ZeroForwardFault: sc.fault,
-	}, !sc.unbound)
+	dt := newFaultedDownTrack(t, DownTrackParams{
+		Codecs: []webrtc.RTPCodecParameters{sc.codec},
+		Logger: logger.NewTestLoggerLevel(rec, 0),
+	}, sc.fault, !sc.unbound)
 	if !sc.unbound {
 		dt.ForceForwardLayerForTest(buffer.VideoLayer{Spatial: 0, Temporal: 0})
 	}
@@ -156,11 +170,10 @@ func TestDownTrackForwardStallLine(t *testing.T) {
 
 func TestDownTrackForwardStallEndedLineWhenClosed(t *testing.T) {
 	rec := &stallLogRecorder{t: t}
-	dt, _ := newUnwiredDownTrack(t, DownTrackParams{
-		Codecs:           []webrtc.RTPCodecParameters{vp8CodecParams},
-		Logger:           logger.NewTestLoggerLevel(rec, 0),
-		ZeroForwardFault: NewZeroForwardFault(time.Second),
-	}, true)
+	dt := newFaultedDownTrack(t, DownTrackParams{
+		Codecs: []webrtc.RTPCodecParameters{vp8CodecParams},
+		Logger: logger.NewTestLoggerLevel(rec, 0),
+	}, NewZeroForwardFault(time.Second), true)
 	dt.ForceForwardLayerForTest(buffer.VideoLayer{Spatial: 0, Temporal: 0})
 	now := mono.UnixNano()
 	require.EqualValues(t, 1, dt.WriteRTP(vp8KeyFramePacket(t, 0, now), 0))
@@ -185,11 +198,10 @@ func TestDownTrackForwardStallEndedLineWhenClosed(t *testing.T) {
 // the check), and still gets its stall line, counted from bind
 func TestDownTrackForwardStallNeverForwarded(t *testing.T) {
 	rec := &stallLogRecorder{t: t}
-	dt, _ := newUnwiredDownTrack(t, DownTrackParams{
-		Codecs:           []webrtc.RTPCodecParameters{vp8CodecParams},
-		Logger:           logger.NewTestLoggerLevel(rec, 0),
-		ZeroForwardFault: NewZeroForwardFault(time.Nanosecond),
-	}, true)
+	dt := newFaultedDownTrack(t, DownTrackParams{
+		Codecs: []webrtc.RTPCodecParameters{vp8CodecParams},
+		Logger: logger.NewTestLoggerLevel(rec, 0),
+	}, NewZeroForwardFault(time.Nanosecond), true)
 	dt.ForceForwardLayerForTest(buffer.VideoLayer{Spatial: 0, Temporal: 0})
 	now := mono.UnixNano()
 	late := now + int64(time.Hour)
@@ -255,10 +267,9 @@ func TestDownTrackForwardStallGates(t *testing.T) {
 // t11: the fault drops every packet once active, and only on the downtrack it is set on
 func TestZeroForwardFaultDropsOnlyWhenSet(t *testing.T) {
 	newDT := func(fault *ZeroForwardFault) *DownTrack {
-		dt, _ := newUnwiredDownTrack(t, DownTrackParams{
-			Codecs:           []webrtc.RTPCodecParameters{vp8CodecParams},
-			ZeroForwardFault: fault,
-		}, true)
+		dt := newFaultedDownTrack(t, DownTrackParams{
+			Codecs: []webrtc.RTPCodecParameters{vp8CodecParams},
+		}, fault, true)
 		dt.ForceForwardLayerForTest(buffer.VideoLayer{Spatial: 0, Temporal: 0})
 		return dt
 	}
@@ -294,5 +305,22 @@ func TestZeroForwardFaultForSelection(t *testing.T) {
 }
 
 func BenchmarkDownTrackWriteRTPHookOnInactive(b *testing.B) {
-	benchmarkDownTrackWriteRTP(b, DownTrackParams{ZeroForwardFault: NewZeroForwardFault(1000 * time.Hour)})
+	dt := newFaultedDownTrack(b, DownTrackParams{
+		Codecs: []webrtc.RTPCodecParameters{vp8CodecParams},
+	}, NewZeroForwardFault(1000*time.Hour), true)
+	dt.ForceForwardLayerForTest(buffer.VideoLayer{Spatial: 0, Temporal: 0})
+
+	ep := vp8KeyFramePacket(b, 0, 1)
+	require.Equal(b, int32(1), dt.WriteRTP(ep, 0), "first packet should forward")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ep.Packet.SequenceNumber++
+		ep.ExtSequenceNumber++
+		ep.Packet.Timestamp += 3000
+		ep.ExtTimestamp += 3000
+		ep.Arrival++
+		dt.WriteRTP(ep, 0)
+	}
 }

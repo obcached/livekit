@@ -38,6 +38,12 @@ func (f *ZeroForwardFault) active(arrival int64, boundAt int64) bool {
 	return boundAt != 0 && arrival-boundAt >= f.afterNanos
 }
 
+// SetZeroForwardFault sets the debug fault (nil = off). Call it after NewDownTrack and
+// before Bind: WriteRTP reads it without a lock once Bind has made the track writable.
+func (d *DownTrack) SetZeroForwardFault(f *ZeroForwardFault) {
+	d.zeroForwardFault = f
+}
+
 // -------------------------------------------------------------------
 
 const (

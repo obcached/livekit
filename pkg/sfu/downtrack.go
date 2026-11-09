@@ -251,8 +251,6 @@ type DownTrackParams struct {
 	EnableStartAtDesiredQuality    bool
 	RTXBudget                      RTXBudgetConfig
 	Listener                       DownTrackListener
-	// debug only, nil unless the debug_zero_forward_fault key selects this downtrack
-	ZeroForwardFault *ZeroForwardFault
 }
 
 // DownTrack implements webrtc.TrackLocal, is the track used to write packets
@@ -364,6 +362,10 @@ type DownTrack struct {
 	fwdDropped   atomic.Uint64
 	boundAt      atomic.Int64 // mono nanos of the last bind
 	forwardStall forwardStallState
+
+	// debug only, nil unless the debug_zero_forward_fault key selects this downtrack;
+	// kept last so the hot fields above keep their offsets
+	zeroForwardFault *ZeroForwardFault
 }
 
 // NewDownTrack returns a DownTrack.
@@ -1057,7 +1059,7 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) int32 {
 		return 0
 	}
 	d.fwdOffered.Inc()
-	if f := d.params.ZeroForwardFault; f != nil && f.active(extPkt.Arrival, d.boundAt.Load()) {
+	if f := d.zeroForwardFault; f != nil && f.active(extPkt.Arrival, d.boundAt.Load()) {
 		return 0
 	}
 
