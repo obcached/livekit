@@ -356,6 +356,12 @@ type DownTrack struct {
 
 	createdAt     int64
 	lastUnmutedAt atomic.Time
+
+	// forward stall check (downtrack_forward_stall.go)
+	fwdOffered   atomic.Uint64
+	fwdDropped   atomic.Uint64
+	boundAt      atomic.Int64 // mono nanos of the last bind
+	forwardStall forwardStallState
 }
 
 // NewDownTrack returns a DownTrack.
@@ -641,6 +647,9 @@ func (d *DownTrack) setBindStateLocked(state bindState) {
 	}
 
 	if state == bindStateBound || state == bindStateUnbound {
+		if state == bindStateBound {
+			d.boundAt.Store(mono.UnixNano())
+		}
 		d.bindOnReceiverReady = nil
 		d.onBindAndConnectedChange()
 	}
@@ -1045,9 +1054,11 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) int32 {
 	if !d.writable.Load() {
 		return 0
 	}
+	d.fwdOffered.Inc()
 
 	tp, err := d.forwarder.GetTranslationParams(extPkt, layer)
 	if tp.shouldDrop {
+		d.fwdDropped.Inc()
 		if err != nil {
 			d.params.Logger.Errorw("could not get translation params", err)
 		}

@@ -47,6 +47,7 @@ import (
 	protosignalling "github.com/livekit/protocol/signalling"
 	"github.com/livekit/protocol/utils"
 	"github.com/livekit/protocol/utils/guid"
+	"github.com/livekit/protocol/utils/mono"
 	"github.com/livekit/protocol/utils/pointer"
 	"github.com/livekit/psrpc"
 
@@ -2837,7 +2838,10 @@ func (p *ParticipantImpl) subscriberRTCPWorker() {
 		batchSize := 0
 		var pkts []rtcp.Packet
 		var sd []rtcp.SourceDescriptionChunk
+		nowMono := mono.UnixNano()
 		for _, subTrack := range subscribedTracks {
+			// before the nil sender report skip: a downtrack that never forwarded has none
+			subTrack.DownTrack().CheckForwardStall(nowMono)
 			sr := subTrack.DownTrack().CreateSenderReport()
 			chunks := subTrack.DownTrack().CreateSourceDescriptionChunks()
 			if sr == nil || chunks == nil {

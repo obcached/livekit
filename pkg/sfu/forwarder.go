@@ -275,6 +275,11 @@ type Forwarder struct {
 	refVideoLayerMode        livekit.VideoLayer_Mode
 	isDDAvailable            bool
 
+	// observation only, read by SwitchDebug
+	switchRejects      uint32
+	lastSwitchReject   SwitchRejectReason
+	lastSwitchRejectAt int64 // mono nanos, the rejected packet's arrival
+
 	provisional *VideoAllocationProvisional
 
 	lastAllocation VideoAllocation
@@ -2257,6 +2262,9 @@ func (f *Forwarder) getTranslationParamsCommon(extPkt *buffer.ExtPacket, layer i
 	)
 	if f.lastSSRC != extPkt.Packet.SSRC {
 		if starting, err = f.processSourceSwitch(extPkt, layer); err != nil {
+			f.switchRejects++
+			f.lastSwitchReject = switchRejectReasonOf(err)
+			f.lastSwitchRejectAt = extPkt.Arrival
 			f.logger.Debugw(
 				"could not switch feed",
 				"error", err,
