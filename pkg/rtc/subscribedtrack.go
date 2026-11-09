@@ -159,6 +159,11 @@ func NewSubscribedTrack(params SubscribedTrackParams) (*SubscribedTrack, error) 
 		EnableStartAtDesiredQuality:    params.EnableStartAtDesiredQuality,
 		RTXBudget:                      params.SubscriberConfig.RTXBudget,
 		Listener:                       s,
+		ZeroForwardFault: params.SubscriberConfig.zeroForwardFault(
+			params.MediaTrack.Kind() == livekit.TrackType_VIDEO,
+			params.Subscriber.Identity(),
+			params.MediaTrack.ID(),
+		),
 	})
 	if err != nil {
 		return nil, err

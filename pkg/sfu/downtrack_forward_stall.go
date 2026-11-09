@@ -343,6 +343,7 @@ func (d *DownTrack) CheckForwardStall(nowMono int64) {
 		"mime", d.Mime(),
 		"bindState", d.bindState.Load(),
 		"rtt", d.rtpStats.GetRtt(),
+		"fault", d.params.ZeroForwardFault != nil,
 		"droppedLines", droppedLines,
 	}
 	d.params.Logger.Infow("downtrack forward stall", appendForwarderStallFields(kv, d.forwarder, nowMono)...)

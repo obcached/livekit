@@ -15,8 +15,12 @@
 package rtc
 
 import (
+	"time"
+
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
+
+	"github.com/livekit/protocol/livekit"
 
 	"github.com/livekit/livekit-server/pkg/config"
 	"github.com/livekit/livekit-server/pkg/sfu"
@@ -62,6 +66,17 @@ type DirectionConfig struct {
 	RTCPFeedback       RTCPFeedbackConfig
 	FlexFEC            FlexFECDirectionConfig
 	RTXBudget          sfu.RTXBudgetConfig
+	// subscriber only, debug only
+	DebugZeroForwardFault *config.ZeroForwardFaultConfig
+}
+
+// zeroForwardFault decides, once per downtrack, whether the debug fault applies to it.
+func (c DirectionConfig) zeroForwardFault(isVideo bool, identity livekit.ParticipantIdentity, trackID livekit.TrackID) *sfu.ZeroForwardFault {
+	zf := c.DebugZeroForwardFault
+	if zf == nil {
+		return nil
+	}
+	return sfu.ZeroForwardFaultFor(zf.Suffix, time.Duration(zf.AfterSeconds*float64(time.Second)), isVideo, string(identity), string(trackID))
 }
 
 // FlexFECDirectionConfig enables flexfec-03 for a transport direction.
@@ -97,6 +112,7 @@ func NewWebRTCConfig(conf *config.Config) (*WebRTCConfig, error) {
 
 	subscriberConfig := getSubscriberConfig(rtcConf.CongestionControl.UseSendSideBWEInterceptor || rtcConf.CongestionControl.UseSendSideBWE)
 	subscriberConfig.RTXBudget = rtcConf.RTXBudget
+	subscriberConfig.DebugZeroForwardFault = rtcConf.DebugZeroForwardFault
 
 	return &WebRTCConfig{
 		WebRTCConfig: *webRTCConfig,
@@ -116,8 +132,10 @@ func (c *WebRTCConfig) UpdatePublisherConfig(consolidated bool) {
 
 func (c *WebRTCConfig) UpdateSubscriberConfig(ccConf config.CongestionControlConfig) {
 	rtxBudget := c.Subscriber.RTXBudget
+	zeroForwardFault := c.Subscriber.DebugZeroForwardFault
 	c.Subscriber = getSubscriberConfig(ccConf.UseSendSideBWEInterceptor || ccConf.UseSendSideBWE)
 	c.Subscriber.RTXBudget = rtxBudget
+	c.Subscriber.DebugZeroForwardFault = zeroForwardFault
 }
 
 func (c *WebRTCConfig) SetBufferFactory(factory *buffer.Factory) {

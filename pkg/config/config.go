@@ -132,6 +132,26 @@ type WebTransportConfig struct {
 	TLSKeyFile  string `yaml:"tls_key_file,omitempty"`
 }
 
+// ZeroForwardFaultConfig selects, per subscriber identity suffix, the first video
+// downtrack of each track; after AfterSeconds bound, it forwards nothing.
+type ZeroForwardFaultConfig struct {
+	Suffix       string  `yaml:"suffix,omitempty"`
+	AfterSeconds float64 `yaml:"after_seconds,omitempty"`
+}
+
+func (c *ZeroForwardFaultConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.Suffix == "" {
+		return errors.New("suffix must not be empty")
+	}
+	if c.AfterSeconds <= 0 {
+		return errors.New("after_seconds must be positive")
+	}
+	return nil
+}
+
 type RTCConfig struct {
 	rtcconfig.RTCConfig `yaml:",inline"`
 
@@ -156,6 +176,9 @@ type RTCConfig struct {
 	PLIThrottle sfu.PLIThrottleConfig `yaml:"pli_throttle,omitempty"`
 
 	RTXBudget sfu.RTXBudgetConfig `yaml:"rtx_budget,omitempty"`
+
+	// Debug only: drop every packet of the first video downtrack of matching subscribers.
+	DebugZeroForwardFault *ZeroForwardFaultConfig `yaml:"debug_zero_forward_fault,omitempty"`
 
 	CongestionControl CongestionControlConfig `yaml:"congestion_control,omitempty"`
 
@@ -726,6 +749,10 @@ func NewConfig(confString string, strictMode bool, c *cli.Command, baseFlags []c
 
 	if err := conf.RTC.CongestionControl.Validate(); err != nil {
 		return nil, fmt.Errorf("could not validate congestion control config: %v", err)
+	}
+
+	if err := conf.RTC.DebugZeroForwardFault.Validate(); err != nil {
+		return nil, fmt.Errorf("could not validate debug_zero_forward_fault config: %v", err)
 	}
 
 	conf.NormalizeTURNTTLs()
