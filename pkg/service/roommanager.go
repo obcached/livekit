@@ -26,6 +26,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
@@ -160,6 +161,10 @@ func NewLocalRoomManager(
 			Region:        conf.Region,
 			NodeId:        string(currentNode.NodeID()),
 		},
+	}
+
+	if rpd := conf.Room.DebugRemoveParticipantDelay; rpd != nil {
+		logger.Infow("debug remove participant delay armed", "room_marker", rpd.RoomMarker, "max_delay", rpd.MaxDelay)
 	}
 
 	r.roomManagerServer, err = rpc.NewTypedRoomManagerServer(r, bus, rpc.WithServerLogger(logger.GetLogger()), middleware.WithServerMetrics(rpc.PSRPCMetricsObserver{}), psrpc.WithServerChannelSize(conf.PSRPC.BufferSize))
@@ -859,14 +864,108 @@ func (r *RoomManager) GetParticipant(ctx context.Context, req *livekit.RoomParti
 }
 
 func (r *RoomManager) RemoveParticipant(ctx context.Context, req *livekit.RoomParticipantIdentity) (*livekit.RemoveParticipantResponse, error) {
+	rpd := r.debugRemoveParticipantDelay(ctx, req)
+	if r.debugRemoveParticipantDropped(ctx, req, rpd) {
+		return nil, errDebugRemoveParticipantDropped
+	}
+
 	room, participant, err := r.roomAndParticipantForReq(ctx, req)
 	if err != nil {
+		rpd.done("not_found")
 		return nil, err
 	}
 
 	participant.GetLogger().Infow("removing participant")
 	room.RemoveParticipant(livekit.ParticipantIdentity(req.Identity), "", types.ParticipantCloseReasonServiceRequestRemoveParticipant)
+	rpd.done("removing " + string(participant.ID()))
 	return &livekit.RemoveParticipantResponse{}, nil
+}
+
+// debugRemoveParticipantDropHold is how long a dropped request is held after
+// entry: longer than the psrpc attempt timeout (3 s), so the caller gives up.
+const debugRemoveParticipantDropHold = 3500 * time.Millisecond
+
+var (
+	debugRemoveParticipantSeq        atomic.Uint64
+	errDebugRemoveParticipantDropped = psrpc.NewErrorf(psrpc.Unavailable, "debug remove participant delay: request dropped")
+)
+
+// debugRemoveParticipantRequest is one request held by the
+// room.debug_remove_participant_delay hook. A nil value means the hook is off.
+type debugRemoveParticipantRequest struct {
+	room      string
+	identity  string
+	seq       uint64
+	drop      bool
+	entry     time.Time
+	holderSID livekit.ParticipantID
+}
+
+func (r *RoomManager) holderSID(ctx context.Context, req *livekit.RoomParticipantIdentity) livekit.ParticipantID {
+	room := r.GetRoom(ctx, livekit.RoomName(req.Room))
+	if room == nil {
+		return ""
+	}
+	if p := room.GetParticipant(livekit.ParticipantIdentity(req.Identity)); p != nil {
+		return p.ID()
+	}
+	return ""
+}
+
+// debugRemoveParticipantDelay logs the entry line and sleeps for the delay the
+// room name asks for. It runs before the identity lookup, so the handler sees
+// the room as it is after the delay.
+func (r *RoomManager) debugRemoveParticipantDelay(ctx context.Context, req *livekit.RoomParticipantIdentity) *debugRemoveParticipantRequest {
+	delay, drop := r.config.Room.DebugRemoveParticipantDelay.Parse(req.Room)
+	if delay <= 0 {
+		return nil
+	}
+	rpd := &debugRemoveParticipantRequest{
+		room:      req.Room,
+		identity:  req.Identity,
+		seq:       debugRemoveParticipantSeq.Add(1),
+		drop:      drop,
+		entry:     time.Now(),
+		holderSID: r.holderSID(ctx, req),
+	}
+	mode := "delay"
+	if drop {
+		mode = "drop"
+	}
+	logger.Infow("debug remove participant delay",
+		"room", req.Room,
+		"participant", req.Identity,
+		"seq", rpd.seq,
+		"delay", delay,
+		"mode", mode,
+		"holder_sid", string(rpd.holderSID),
+	)
+	time.Sleep(delay)
+	return rpd
+}
+
+// debugRemoveParticipantDropped reports whether a drop-mode request must be
+// dropped: the holder seen at entry is gone or replaced. A dropped request is
+// held until debugRemoveParticipantDropHold after entry, without acting.
+func (r *RoomManager) debugRemoveParticipantDropped(ctx context.Context, req *livekit.RoomParticipantIdentity, rpd *debugRemoveParticipantRequest) bool {
+	if rpd == nil || !rpd.drop || r.holderSID(ctx, req) == rpd.holderSID {
+		return false
+	}
+	rpd.done("dropped")
+	time.Sleep(time.Until(rpd.entry.Add(debugRemoveParticipantDropHold)))
+	return true
+}
+
+func (rpd *debugRemoveParticipantRequest) done(outcome string) {
+	if rpd == nil {
+		return
+	}
+	logger.Infow("debug remove participant delay done",
+		"room", rpd.room,
+		"participant", rpd.identity,
+		"seq", rpd.seq,
+		"outcome", outcome,
+	)
 }
 
 func (r *RoomManager) MutePublishedTrack(ctx context.Context, req *livekit.MuteRoomTrackRequest) (*livekit.MuteRoomTrackResponse, error) {
