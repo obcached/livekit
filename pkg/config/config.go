@@ -152,6 +152,69 @@ func (c *ZeroForwardFaultConfig) Validate() error {
 	return nil
 }
 
+// RemoveParticipantDelayConfig delays (or drops) the RemoveParticipant RPC handler
+// for rooms whose name carries "<RoomMarker><ms>-" (delay) or "<RoomMarker>d<ms>-"
+// (drop). Debug only: rooms without the marker are untouched.
+type RemoveParticipantDelayConfig struct {
+	RoomMarker string        `yaml:"room_marker,omitempty"`
+	MaxDelay   time.Duration `yaml:"max_delay,omitempty"`
+}
+
+const maxRemoveParticipantDelay = 10 * time.Second
+
+func (c *RemoveParticipantDelayConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.RoomMarker == "" {
+		return errors.New("room_marker must not be empty")
+	}
+	if c.MaxDelay <= 0 || c.MaxDelay > maxRemoveParticipantDelay {
+		return fmt.Errorf("max_delay must be in (0, %s]", maxRemoveParticipantDelay)
+	}
+	return nil
+}
+
+// Parse returns the delay encoded in the room name, clamped to MaxDelay, and
+// whether it asks for drop mode. No marker, a malformed marker or a nil config
+// give 0. The first well-formed marker wins.
+func (c *RemoveParticipantDelayConfig) Parse(roomName string) (time.Duration, bool) {
+	if c == nil || c.RoomMarker == "" {
+		return 0, false
+	}
+	for rest := roomName; ; {
+		i := strings.Index(rest, c.RoomMarker)
+		if i < 0 {
+			return 0, false
+		}
+		rest = rest[i+len(c.RoomMarker):]
+		if d, drop, ok := c.parseMarkerTail(rest); ok {
+			return d, drop
+		}
+	}
+}
+
+// parseMarkerTail parses "d?<digits>-" at the start of s.
+func (c *RemoveParticipantDelayConfig) parseMarkerTail(s string) (time.Duration, bool, bool) {
+	drop := strings.HasPrefix(s, "d")
+	if drop {
+		s = s[1:]
+	}
+	n := 0
+	for n < len(s) && s[n] >= '0' && s[n] <= '9' {
+		n++
+	}
+	if n == 0 || n >= len(s) || s[n] != '-' {
+		return 0, false, false
+	}
+	ms, err := strconv.ParseInt(s[:n], 10, 64)
+	if err != nil || ms > c.MaxDelay.Milliseconds() {
+		// only a range error is possible: all digits
+		return c.MaxDelay, drop, true
+	}
+	return time.Duration(ms) * time.Millisecond, drop, true
+}
+
 type RTCConfig struct {
 	rtcconfig.RTCConfig `yaml:",inline"`
 
@@ -327,6 +390,9 @@ type RoomConfig struct {
 	// deprecated, moved to limits
 	MaxParticipantIdentityLength int                                   `yaml:"max_participant_identity_length,omitempty"`
 	RoomConfigurations           map[string]*livekit.RoomConfiguration `yaml:"room_configurations,omitempty"`
+
+	// Debug only: delay or drop RemoveParticipant for rooms carrying the marker.
+	DebugRemoveParticipantDelay *RemoveParticipantDelayConfig `yaml:"debug_remove_participant_delay,omitempty"`
 }
 
 type CodecSpec struct {
@@ -753,6 +819,10 @@ func NewConfig(confString string, strictMode bool, c *cli.Command, baseFlags []c
 
 	if err := conf.RTC.DebugZeroForwardFault.Validate(); err != nil {
 		return nil, fmt.Errorf("could not validate debug_zero_forward_fault config: %v", err)
+	}
+
+	if err := conf.Room.DebugRemoveParticipantDelay.Validate(); err != nil {
+		return nil, fmt.Errorf("could not validate debug_remove_participant_delay config: %v", err)
 	}
 
 	conf.NormalizeTURNTTLs()
