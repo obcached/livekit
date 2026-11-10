@@ -184,14 +184,34 @@ func TestDownTrackForwardStallEndedLineWhenClosed(t *testing.T) {
 		dt.CheckForwardStall(now + int64(k)*3*int64(time.Second))
 	}
 	require.Len(t, rec.matching(stallLineMsg), 1, "precondition: onset logged")
+	require.Empty(t, rec.matching(stallEndedMsg), "precondition: no ended line before close")
 
+	// the subscriber's RTCP worker drops a closed downtrack before its next tick, so the
+	// ended line must come from the close itself
 	dt.Close()
-	dt.CheckForwardStall(now + 9*int64(time.Second))
-	dt.CheckForwardStall(now + 12*int64(time.Second))
 	ended := rec.matching(stallEndedMsg)
-	require.Len(t, ended, 1)
+	require.Len(t, ended, 1, "close emits the ended line")
 	require.Contains(t, ended[0], `"closed"=true`)
-	require.Contains(t, ended[0], `"stallMs"=9000`)
+
+	// a later check (a tick racing the close) does not log it again
+	dt.CheckForwardStall(now + 12*int64(time.Second))
+	require.Len(t, rec.matching(stallEndedMsg), 1)
+}
+
+// a downtrack closed without an open stall logs no ended line
+func TestDownTrackForwardStallNoEndedLineWhenClosedWithoutStall(t *testing.T) {
+	rec := &stallLogRecorder{t: t}
+	dt := newFaultedDownTrack(t, DownTrackParams{
+		Codecs: []webrtc.RTPCodecParameters{vp8CodecParams},
+		Logger: logger.NewTestLoggerLevel(rec, 0),
+	}, nil, true)
+	dt.ForceForwardLayerForTest(buffer.VideoLayer{Spatial: 0, Temporal: 0})
+	now := mono.UnixNano()
+	require.EqualValues(t, 1, dt.WriteRTP(vp8KeyFramePacket(t, 0, now), 0), "precondition: forwarding")
+	dt.CheckForwardStall(now)
+	dt.Close()
+	require.Empty(t, rec.matching(stallLineMsg))
+	require.Empty(t, rec.matching(stallEndedMsg))
 }
 
 // a downtrack that never forwarded has no sender report (the RTCP worker skips it after

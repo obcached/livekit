@@ -1570,6 +1570,10 @@ func (d *DownTrack) CloseWithFlush(flush bool, isEnding bool) {
 	}
 	d.bindLock.Unlock()
 
+	// The subscriber's RTCP worker drops a closed downtrack before its next check, so
+	// close an open forward stall here (logs its ended line only if an onset was logged).
+	d.CheckForwardStall(mono.UnixNano())
+
 	d.connectionStats.Close()
 
 	d.rtpStats.Stop()
