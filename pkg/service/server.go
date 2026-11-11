@@ -499,6 +499,9 @@ func NewHTTPHandler(conf *config.Config, keyProvider auth.KeyProvider, apiHandle
 		apiMiddlewares = append(apiMiddlewares, authMiddleware)
 		agentMiddlewares = append(agentMiddlewares, authMiddleware)
 	}
+	// outside the keyProvider branch: RoomService.RemoveParticipant reads the
+	// expected SID whether or not the auth middleware is installed
+	apiMiddlewares = append(apiMiddlewares, ExpectedSIDMiddleware{})
 
 	api := configureMiddlewares(apiHandler, apiMiddlewares...)
 	var dispatch http.Handler = api

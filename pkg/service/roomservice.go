@@ -232,6 +232,14 @@ func (s *RoomService) RemoveParticipant(ctx context.Context, req *livekit.RoomPa
 		return nil, twirpAuthError(err)
 	}
 
+	if sid := expectedSIDFromRequest(ctx); sid != "" {
+		AppendLogFields(ctx, "expected_sid", sid)
+		if !validExpectedSID(sid) {
+			return nil, ErrInvalidExpectedSID
+		}
+		ctx = withExpectedSIDMetadata(ctx, sid)
+	}
+
 	if os, ok := s.roomStore.(OSSServiceStore); ok {
 		found, err := os.HasParticipant(ctx, livekit.RoomName(req.Room), livekit.ParticipantIdentity(req.Identity))
 		if err != nil {

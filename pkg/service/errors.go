@@ -36,6 +36,7 @@ var (
 	ErrOperationFailed                  = psrpc.NewErrorf(psrpc.Internal, "operation cannot be completed")
 	ErrParticipantNotFound              = psrpc.NewErrorf(psrpc.NotFound, "participant does not exist")
 	ErrParticipantSessionReplaced       = psrpc.NewErrorf(psrpc.NotFound, "participant session replaced")
+	ErrInvalidExpectedSID               = psrpc.NewErrorf(psrpc.InvalidArgument, "invalid expected participant sid")
 	ErrRoomNotFound                     = psrpc.NewErrorf(psrpc.NotFound, "requested room does not exist")
 	ErrRoomLockFailed                   = psrpc.NewErrorf(psrpc.Internal, "could not lock room")
 	ErrRoomUnlockFailed                 = psrpc.NewErrorf(psrpc.Internal, "could not unlock room, lock token does not match")

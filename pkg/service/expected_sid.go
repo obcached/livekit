@@ -16,6 +16,8 @@ package service
 
 import (
 	"context"
+	"net/http"
+	"regexp"
 
 	"github.com/livekit/psrpc/pkg/metadata"
 )
@@ -38,4 +40,39 @@ func expectedSIDFromIncoming(ctx context.Context) string {
 		return ""
 	}
 	return head.Metadata[ExpectedSIDMetadataKey]
+}
+
+// expectedSIDPattern is the shape of a participant SID (guid.New("PA_")).
+var expectedSIDPattern = regexp.MustCompile(`^PA_[A-Za-z0-9]{1,60}$`)
+
+type expectedSIDKey struct{}
+
+// ExpectedSIDMiddleware stores the raw ExpectedSIDHeader value in the request
+// ctx for RoomService.RemoveParticipant, which validates it. It fronts every
+// API route, /rtc included, so it never rejects a request and never wraps the
+// ResponseWriter (websocket hijack).
+type ExpectedSIDMiddleware struct{}
+
+func (ExpectedSIDMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+	if v := r.Header.Get(ExpectedSIDHeader); v != "" {
+		r = r.WithContext(context.WithValue(r.Context(), expectedSIDKey{}, v))
+	}
+	next(w, r)
+}
+
+// expectedSIDFromRequest returns the raw header value the middleware stored,
+// or "" when the request carried none.
+func expectedSIDFromRequest(ctx context.Context) string {
+	v, _ := ctx.Value(expectedSIDKey{}).(string)
+	return v
+}
+
+func validExpectedSID(sid string) bool {
+	return expectedSIDPattern.MatchString(sid)
+}
+
+// withExpectedSIDMetadata adds the expected SID to the outgoing psrpc request
+// metadata.
+func withExpectedSIDMetadata(ctx context.Context, sid string) context.Context {
+	return metadata.AppendMetadataToOutgoingContext(ctx, ExpectedSIDMetadataKey, sid)
 }
