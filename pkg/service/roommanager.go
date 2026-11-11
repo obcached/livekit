@@ -875,8 +875,23 @@ func (r *RoomManager) RemoveParticipant(ctx context.Context, req *livekit.RoomPa
 		return nil, err
 	}
 
+	// The live holder is read after the rpd delay, never from the entry
+	// snapshot. The pre-check reports a refusal; the authoritative compare is
+	// room.RemoveParticipant's, under the room lock.
+	expectedSID := livekit.ParticipantID(expectedSIDFromIncoming(ctx))
+	if expectedSID != "" && participant.ID() != expectedSID {
+		logger.Infow("remove participant refused: session replaced",
+			"room", req.Room,
+			"participant", req.Identity,
+			"expected_sid", string(expectedSID),
+			"live_sid", string(participant.ID()),
+		)
+		rpd.done("sid_mismatch " + string(participant.ID()))
+		return nil, ErrParticipantSessionReplaced
+	}
+
 	participant.GetLogger().Infow("removing participant")
-	room.RemoveParticipant(livekit.ParticipantIdentity(req.Identity), "", types.ParticipantCloseReasonServiceRequestRemoveParticipant)
+	room.RemoveParticipant(livekit.ParticipantIdentity(req.Identity), expectedSID, types.ParticipantCloseReasonServiceRequestRemoveParticipant)
 	rpd.done("removing " + string(participant.ID()))
 	return &livekit.RemoveParticipantResponse{}, nil
 }
