@@ -145,10 +145,16 @@ func joinSG(t *testing.T, rm *service.RoomManager, roomName string, identity liv
 		room = rm.GetRoom(ctx, livekit.RoomName(roomName))
 		require.NotNil(t, room)
 	}
-	p := rtc.NewMockParticipant(identity, types.CurrentProtocol, false, true, room.LocalParticipantListener())
-	p.GetLoggerReturns(sgParticipantLogger{Logger: logger.GetDiscardLogger(), room: roomName, sid: string(p.ID())})
+	p := newSGParticipant(room, roomName, identity)
 	require.NoError(t, room.Join(p, nil, &rtc.ParticipantOptions{AutoSubscribe: true}, nil))
 	return room, p
+}
+
+// newSGParticipant returns a mock participant, its SID minted, not yet joined.
+func newSGParticipant(room *rtc.Room, roomName string, identity livekit.ParticipantIdentity) *typesfakes.FakeLocalParticipant {
+	p := rtc.NewMockParticipant(identity, types.CurrentProtocol, false, true, room.LocalParticipantListener())
+	p.GetLoggerReturns(sgParticipantLogger{Logger: logger.GetDiscardLogger(), room: roomName, sid: string(p.ID())})
+	return p
 }
 
 // withExpectedSID builds the handler ctx a psrpc server builds for a request
@@ -237,4 +243,193 @@ func TestRemoveParticipantSIDGuard_PSRPCMetadata(t *testing.T) {
 	require.NotNil(t, room.GetParticipant(identity))
 	require.Equal(t, a.ID(), room.GetParticipant(identity).ID())
 	require.Equal(t, 0, sgRemovingLines(guardRoom))
+}
+
+// waitEntry waits for the rpd hook entry line of roomName: the handler is
+// inside its delay, before the identity lookup.
+func waitEntry(t *testing.T, roomName string) {
+	t.Helper()
+	require.Eventually(t, func() bool { return len(rpdCaptured.find(rpdEntryMsg, "room", roomName)) == 1 }, time.Second, time.Millisecond)
+}
+
+func doneOutcome(t *testing.T, roomName string) any {
+	t.Helper()
+	_, done := requireEntryDone(t, roomName)
+	return done.kv["outcome"]
+}
+
+// replaceDuringDelay seats A in a held room and starts a remove whose expected
+// SID expect picks ("" = none). Inside the delay it closes A with reason and
+// seats B under the same identity.
+func replaceDuringDelay(
+	t *testing.T,
+	rm *service.RoomManager,
+	roomName string,
+	reason types.ParticipantCloseReason,
+	expect func(a, b livekit.ParticipantID) livekit.ParticipantID,
+) (*rtc.Room, *typesfakes.FakeLocalParticipant, *typesfakes.FakeLocalParticipant, rpdResult) {
+	t.Helper()
+	room, a := joinSG(t, rm, roomName, "guest")
+	b := newSGParticipant(room, roomName, "guest")
+	require.NotEqual(t, a.ID(), b.ID())
+	ctx := context.Background()
+	if sid := expect(a.ID(), b.ID()); sid != "" {
+		ctx = withExpectedSID(ctx, sid)
+	}
+	ch := removeAsyncCtx(ctx, rm, roomName, "guest")
+	waitEntry(t, roomName)
+	room.RemoveParticipant("guest", a.ID(), reason)
+	require.NoError(t, room.Join(b, nil, &rtc.ParticipantOptions{AutoSubscribe: true}, nil))
+	return room, a, b, <-ch
+}
+
+func expectA(a, _ livekit.ParticipantID) livekit.ParticipantID { return a }
+func expectB(_, b livekit.ParticipantID) livekit.ParticipantID { return b }
+func expectNone(_, _ livekit.ParticipantID) livekit.ParticipantID {
+	return ""
+}
+
+func requireSeated(t *testing.T, room *rtc.Room, p types.LocalParticipant) {
+	t.Helper()
+	live := room.GetParticipant(p.Identity())
+	require.NotNil(t, live)
+	require.Equal(t, p.ID(), live.ID())
+}
+
+// T-LK-1 (O1): expected == live -> removed.
+func TestRemoveParticipantSIDGuard_Match(t *testing.T) {
+	rm, _ := newSGRoomManager(t, psrpc.NewLocalMessageBus())
+	const roomName = "sg-match-rpd10-1"
+	room, a := joinSG(t, rm, roomName, "guest")
+
+	res := <-removeAsyncCtx(withExpectedSID(context.Background(), a.ID()), rm, roomName, "guest")
+	require.NoError(t, res.err)
+	require.Nil(t, room.GetParticipant("guest"))
+	require.Equal(t, 1, sgRemovingLines(roomName))
+	require.Equal(t, "removing "+string(a.ID()), doneOutcome(t, roomName))
+	require.Empty(t, sgCaptured.find(sgRefusedMsg, "room", roomName))
+}
+
+// T-LK-2 (O3, WORLD K): the late handler finds a new session of the identity
+// and refuses to remove it.
+func TestRemoveParticipantSIDGuard_WorldK(t *testing.T) {
+	rm, _ := newSGRoomManager(t, psrpc.NewLocalMessageBus())
+	const roomName = "sg-worldk-rpd300-1"
+	room, a, b, res := replaceDuringDelay(t, rm, roomName, types.ParticipantCloseReasonClientRequestLeave, expectA)
+
+	requireReplaced(t, res.err)
+	require.ErrorIs(t, res.err, service.ErrParticipantSessionReplaced)
+	requireSeated(t, room, b)
+	require.Equal(t, "sid_mismatch "+string(b.ID()), doneOutcome(t, roomName))
+	require.Equal(t, 0, sgRemovingLines(roomName))
+
+	refused := sgCaptured.find(sgRefusedMsg, "room", roomName)
+	require.Len(t, refused, 1)
+	require.Equal(t, "guest", refused[0].kv["participant"])
+	require.Equal(t, string(a.ID()), refused[0].kv["expected_sid"])
+	require.Equal(t, string(b.ID()), refused[0].kv["live_sid"])
+}
+
+// T-LK-3 (O5): no expected SID -> identity-keyed, the new session is removed
+// (kick semantics).
+func TestRemoveParticipantSIDGuard_NoExpectedRemovesReplacement(t *testing.T) {
+	rm, _ := newSGRoomManager(t, psrpc.NewLocalMessageBus())
+	const roomName = "sg-noexp-rpd300-1"
+	room, _, b, res := replaceDuringDelay(t, rm, roomName, types.ParticipantCloseReasonClientRequestLeave, expectNone)
+
+	require.NoError(t, res.err)
+	require.Nil(t, room.GetParticipant("guest"))
+	require.Equal(t, "removing "+string(b.ID()), doneOutcome(t, roomName))
+	require.Equal(t, 1, sgRemovingLines(roomName))
+	require.Empty(t, sgCaptured.find(sgRefusedMsg, "room", roomName))
+}
+
+// T-LK-4 (O2): A gone and nobody seated -> plain not found.
+func TestRemoveParticipantSIDGuard_GoneNotFound(t *testing.T) {
+	rm, _ := newSGRoomManager(t, psrpc.NewLocalMessageBus())
+	const roomName = "sg-gone-rpd300-1"
+	room, a := joinSG(t, rm, roomName, "guest")
+
+	ch := removeAsyncCtx(withExpectedSID(context.Background(), a.ID()), rm, roomName, "guest")
+	waitEntry(t, roomName)
+	room.RemoveParticipant("guest", a.ID(), types.ParticipantCloseReasonClientRequestLeave)
+
+	res := <-ch
+	require.ErrorIs(t, res.err, service.ErrParticipantNotFound)
+	require.NotErrorIs(t, res.err, service.ErrParticipantSessionReplaced)
+	require.Equal(t, "participant does not exist", res.err.Error())
+	require.Equal(t, "not_found", doneOutcome(t, roomName))
+	require.Empty(t, sgCaptured.find(sgRefusedMsg, "room", roomName))
+}
+
+// T-LK-5 (O6): the caller targets the new session -> it is removed.
+func TestRemoveParticipantSIDGuard_ExpectedIsReplacement(t *testing.T) {
+	rm, _ := newSGRoomManager(t, psrpc.NewLocalMessageBus())
+	const roomName = "sg-expb-rpd300-1"
+	room, _, b, res := replaceDuringDelay(t, rm, roomName, types.ParticipantCloseReasonClientRequestLeave, expectB)
+
+	require.NoError(t, res.err)
+	require.Nil(t, room.GetParticipant("guest"))
+	require.Equal(t, "removing "+string(b.ID()), doneOutcome(t, roomName))
+}
+
+// T-LK-6 (O4): A closed with the DUPLICATE_IDENTITY close reason, B seated
+// during the delay -> refused. The harness uses room.Join, not StartSession,
+// so roommanager.go's duplicate-identity branch itself is not exercised.
+func TestRemoveParticipantSIDGuard_DuplicateIdentityClose(t *testing.T) {
+	rm, _ := newSGRoomManager(t, psrpc.NewLocalMessageBus())
+	const roomName = "sg-dupid-rpd300-1"
+	room, _, b, res := replaceDuringDelay(t, rm, roomName, types.ParticipantCloseReasonDuplicateIdentity, expectA)
+
+	requireReplaced(t, res.err)
+	requireSeated(t, room, b)
+	require.Equal(t, "sid_mismatch "+string(b.ID()), doneOutcome(t, roomName))
+}
+
+// T-LK-7 (O7): the identity changes hands between the lookup and the delete;
+// the room-level guard under the room lock keeps B seated.
+func TestRemoveParticipantSIDGuard_SwapAfterLookup(t *testing.T) {
+	rm, _ := newSGRoomManager(t, psrpc.NewLocalMessageBus())
+	const roomName = "sg-swap"
+	room, a := joinSG(t, rm, roomName, "guest")
+	b := newSGParticipant(room, roomName, "guest")
+
+	// the hook runs on the handler goroutine; the channel receive below
+	// orders its writes before the reads
+	swapped := false
+	var joinErr error
+	service.SetRemoveParticipantAfterLookupHook(t, func() {
+		swapped = true
+		room.RemoveParticipant("guest", a.ID(), types.ParticipantCloseReasonClientRequestLeave)
+		joinErr = room.Join(b, nil, &rtc.ParticipantOptions{AutoSubscribe: true}, nil)
+	})
+
+	res := <-removeAsyncCtx(withExpectedSID(context.Background(), a.ID()), rm, roomName, "guest")
+	require.True(t, swapped)
+	require.NoError(t, joinErr)
+	require.NoError(t, res.err)
+	requireSeated(t, room, b)
+}
+
+// T-LK-9: drop mode with an expected SID keeps the drop path: the replaced
+// holder is dropped before the guard runs.
+func TestRemoveParticipantSIDGuard_DropModeUnchanged(t *testing.T) {
+	rm, _ := newSGRoomManager(t, psrpc.NewLocalMessageBus())
+	const roomName = "sg-drop-rpdd300-1"
+	room, _, b, res := replaceDuringDelay(t, rm, roomName, types.ParticipantCloseReasonClientRequestLeave, expectA)
+
+	requirePSRPCCode(t, res.err, psrpc.Unavailable)
+	require.GreaterOrEqual(t, res.elapsed, 3500*time.Millisecond)
+	requireSeated(t, room, b)
+	require.Equal(t, "dropped", doneOutcome(t, roomName))
+	require.Empty(t, sgCaptured.find(sgRefusedMsg, "room", roomName))
+}
+
+// T-LK-10: the wire contract shared with pnm.
+func TestRemoveParticipantSIDGuard_GoldenConstants(t *testing.T) {
+	require.Equal(t, "X-Talkizy-Expected-Sid", service.ExpectedSIDHeader)
+	require.Equal(t, "x-talkizy-expected-sid", service.ExpectedSIDMetadataKey)
+	require.Equal(t, sgExpectedSIDKey, service.ExpectedSIDMetadataKey)
+	require.Equal(t, "participant session replaced", service.ErrParticipantSessionReplaced.Error())
+	require.Equal(t, psrpc.NotFound, service.ErrParticipantSessionReplaced.Code())
 }

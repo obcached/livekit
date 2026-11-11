@@ -890,11 +890,20 @@ func (r *RoomManager) RemoveParticipant(ctx context.Context, req *livekit.RoomPa
 		return nil, ErrParticipantSessionReplaced
 	}
 
+	if hook := removeParticipantAfterLookupHook.Load(); hook != nil {
+		(*hook)()
+	}
+
 	participant.GetLogger().Infow("removing participant")
 	room.RemoveParticipant(livekit.ParticipantIdentity(req.Identity), expectedSID, types.ParticipantCloseReasonServiceRequestRemoveParticipant)
 	rpd.done("removing " + string(participant.ID()))
 	return &livekit.RemoveParticipantResponse{}, nil
 }
+
+// removeParticipantAfterLookupHook is a test seam, nil in production: when
+// set, RemoveParticipant calls it between the identity lookup and
+// room.RemoveParticipant. Only export_test.go sets it.
+var removeParticipantAfterLookupHook atomic.Pointer[func()]
 
 // debugRemoveParticipantDropHold is how long a dropped request is held after
 // entry: longer than the psrpc attempt timeout (3 s), so the caller gives up.
